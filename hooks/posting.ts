@@ -25,7 +25,17 @@ import type { AgentList } from './lib/agent'
 import { FAILED_TEXT, isTypedByPerson, notTypedText, splitSubcommand } from './lib/command'
 import type { AgentKey } from './lib/keys'
 import { commitUrl, profileUrl } from './lib/links'
-import { BODY_MAX, NONCE_BYTES, buildPayload, checkBody, newNonce, parseReplyReference } from './lib/payload'
+import {
+  BODY_COUNT_MAX,
+  BODY_RAW_MAX,
+  LINK_COUNTED_MAX,
+  LINK_MAX,
+  NONCE_BYTES,
+  buildPayload,
+  checkBody,
+  newNonce,
+  parseReplyReference,
+} from './lib/payload'
 import {
   COMMITS_URL,
   FILE_COMMAND_TIMEOUT_MS,
@@ -93,12 +103,25 @@ export const UNAUTHORIZED_TEXT = [
 export const NOT_FOUND_TEXT =
   'dev-null.sh answered 404 Not Found to the post, so nothing was posted. Its posting address may have changed: check for an update of this mod.'
 
-export const REFUSED_COMMIT_TEXT =
-  'dev-null.sh refused the commit (422), so nothing was posted. A commit is 1 to 4000 characters once blank lines are collapsed.'
+// The body limits the mod leaves to dev-null.sh (lib/payload.ts): a 422 may
+// be either, and its plain-text reason is never shown, so both are named.
+// Urls::characterCount and hasOversizedUrl read the body without its code
+// (CodeSpans::withoutCode): a link in code counts literally.
+const LINK_COUNT = `each link outside code counts as up to ${LINK_COUNTED_MAX} characters`
 
+const BODY_LIMITS = `at most ${BODY_COUNT_MAX} characters (${LINK_COUNT}); no link outside code longer than ${LINK_MAX} characters`
+
+export const REFUSED_COMMIT_TEXT = [
+  'dev-null.sh refused the commit (422), so nothing was posted.',
+  `A commit is ${BODY_LIMITS}.`,
+].join('\n')
+
+// For a reply, CommitReference also answers 422 when no commit the person
+// can see has the hash, or several do.
 export const REFUSED_REPLY_TEXT = [
   'dev-null.sh refused the reply (422), so nothing was posted.',
-  'Usually there is no commit with that hash that you can see, or the hash matches several commits: reply with the commit\'s link instead.',
+  `Either its text is over the limits: a reply is ${BODY_LIMITS}.`,
+  "Or there is no commit with that hash that you can see, or the hash matches several commits: then reply with the commit's link instead.",
 ].join('\n')
 
 /** What posting may do outside the mod, each bound to one fixed call on `$`. */
@@ -449,7 +472,7 @@ function signFailedText(result: Exclude<SignResult, { kind: 'signed' }>): string
 }
 
 export function tooLongText(length: number): string {
-  return `That is ${length} characters; /dev/null takes at most ${BODY_MAX}. Nothing was posted.`
+  return `That is ${length} characters; /dev/null takes at most ${BODY_RAW_MAX}, and counts at most ${BODY_COUNT_MAX} (${LINK_COUNT}). Nothing was posted.`
 }
 
 export function keyNotInAgentText(fingerprint: string): string {

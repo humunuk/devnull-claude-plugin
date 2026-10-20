@@ -117,6 +117,19 @@ export function finishLoad(current: PaneLoad, token: string, answer: CommitsAnsw
   return failedLoad(username, answer.problem, nowMs, current.page, current.fetchedAtMs)
 }
 
+/**
+ * The load after the one named `token` gave up its claim: it was stopped (the
+ * pane closed) before it brought anything. The page drawn before it is ready
+ * again, or nothing is; no failure is recorded, so the next load can claim at
+ * once. Any other load's stop changes nothing.
+ */
+export function dropLoad(current: PaneLoad, token: string): PaneLoad {
+  if (current.kind !== 'loading' || current.token !== token) return current
+  const { username, page, fetchedAtMs } = current
+
+  return fetchedAtMs === null ? { kind: 'idle' } : { kind: 'ready', username, page: [...page], fetchedAtMs }
+}
+
 export function failedLoad(
   username: string | null,
   problem: PaneProblem,
@@ -164,6 +177,20 @@ export type PaneCommit = {
   href: string | undefined
 }
 
+/**
+ * One of the person's own replies with new answers, as the `New replies`
+ * section draws it: its hash, its first cleaned line, the new answers, its
+ * link on the surface (undefined when its parts fail the link patterns).
+ */
+export type NewReplyRow = {
+  id: string
+  hash: string
+  /** The first cleaned line of the reply's body, `\u2026` when more follows; '' for none. */
+  line: string
+  newReplies: number
+  href: string | undefined
+}
+
 /** What the pane shows besides its header buttons. */
 export type PaneView = {
   /** `/dev/null \u00b7 @<username>`, or `/dev/null` with no account known. */
@@ -174,13 +201,16 @@ export type PaneView = {
   message: string | undefined
   /** A second fixed line under it (how long dev-null.sh asked to wait). */
   hint: string | undefined
+  /** The person's own replies with new answers, drawn above the commits; empty for none. */
+  newReplies: NewReplyRow[]
   commits: PaneCommit[]
 }
 
 /**
- * The pane's content on `surface` for the load, the recent list and the reply
- * alerts as they stand at `nowMs`. The `updated` age is the load's own last
- * page, not the recent list's, which the reply alerts move too.
+ * The pane's content on `surface` for the load, the recent list and the
+ * `+N new` marks (see paneCommits) as they stand at `nowMs`. The `updated`
+ * age is the load's own last page, not the recent list's, which the reply
+ * alerts move too.
  */
 export function paneView(
   load: PaneLoad,
@@ -193,10 +223,11 @@ export function paneView(
   const title = username === null ? '/dev/null' : `/dev/null \u00b7 @${username}`
   const list = username !== null && recent !== null && recent.username === username ? recent : null
   const commits = list === null ? [] : paneCommits(list, pageOf(load, username), alerts, nowMs, surface)
+  const newReplies = list === null ? [] : newReplyRows(list, alerts, surface)
   const fetchedAtMs = fetchedAtOf(load, username)
   const freshness =
     load.kind === 'loading' ? 'loading\u2026' : fetchedAtMs === null ? '' : `updated ${relativeAge(fetchedAtMs, nowMs)}`
-  const view = { title, freshness, hint: undefined, commits }
+  const view = { title, freshness, hint: undefined, newReplies, commits }
 
   switch (load.kind) {
     case 'idle':
@@ -242,9 +273,12 @@ function problemText(problem: PaneProblem): string {
 /**
  * The commits of the page last fetched, in its order, as the recent list holds
  * them (its counts may be newer, from the reply alerts), with the new replies
- * the alerts hold for each and its link on `surface`. A commit no longer on
- * that page is left out, though the recent list keeps it for completion; so
- * are replies, and anything not by the list's username.
+ * `alerts` hold for each and its link on `surface`. `alerts` are the marks the
+ * pane took on when it opened and the alerts on show since; one commit in
+ * both has both counts added, as each counts replies the other does not (the
+ * open marked the first ones seen). A commit no longer on that page is left
+ * out, though the recent list keeps it for completion; so are replies, and
+ * anything not by the list's username.
  */
 export function paneCommits(
   recent: RecentCommits,
@@ -254,9 +288,7 @@ export function paneCommits(
   surface: RenderSurface,
 ): PaneCommit[] {
   const byId = new Map(recent.commits.map(commit => [commit.id, commit]))
-  const newById = new Map(
-    alerts.filter(alert => alert.username === recent.username).map(alert => [alert.id, alert.newReplies]),
-  )
+  const newById = newRepliesById(recent.username, alerts)
 
   return page
     .flatMap(id => {
@@ -267,6 +299,37 @@ export function paneCommits(
     .filter(commit => commit.parentId === null && commit.username === recent.username)
     .slice(0, PAGE_SIZE)
     .map(commit => ({ ...drawnCommit(commit, nowMs, surface), newReplies: newById.get(commit.id) ?? 0 }))
+}
+
+/**
+ * The person's own replies that `alerts` hold new answers for (the marks the
+ * pane took on when it opened and the alerts on show since, added up as in
+ * paneCommits), in the order the alerts name them: Mine's commit rows hold
+ * only top-level commits, so these are drawn in a section of their own. A
+ * reply is known by the recent list, which the reply alerts fill from the
+ * same lists they compare; one it does not hold, or not by its username, or
+ * not a reply, is left out.
+ */
+export function newReplyRows(recent: RecentCommits, alerts: readonly ReplyAlert[], surface: RenderSurface): NewReplyRow[] {
+  const byId = new Map(recent.commits.map(commit => [commit.id, commit]))
+
+  return [...newRepliesById(recent.username, alerts)].flatMap(([id, newReplies]) => {
+    const commit = byId.get(id)
+    if (commit === undefined || commit.parentId === null || commit.username !== recent.username || newReplies <= 0) return []
+    const [line = ''] = cleanBody(commit.body, { maxLines: 1, maxCodePoints: BODY_DRAWN_MAX }).lines
+
+    return [{ id, hash: commit.shortHash, line, newReplies, href: commitLink(commit.username, id, surface) }]
+  })
+}
+
+/** The new answers `alerts` hold per commit id, for `username`'s alerts only; one id in several adds them up. */
+function newRepliesById(username: string, alerts: readonly ReplyAlert[]): Map<string, number> {
+  const byId = new Map<string, number>()
+  for (const alert of alerts) {
+    if (alert.username === username) byId.set(alert.id, (byId.get(alert.id) ?? 0) + alert.newReplies)
+  }
+
+  return byId
 }
 
 /**

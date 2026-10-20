@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { BODY_MAX, buildPayload, checkBody, newNonce, parseReplyReference } from '../hooks/lib/payload'
+import { BODY_COUNT_MAX, BODY_RAW_MAX, LINK_COUNTED_MAX, LINK_MAX, buildPayload, checkBody, newNonce, parseReplyReference } from '../hooks/lib/payload'
 import { commitId } from './fixtures/commits'
 
 describe('the nonce', () => {
@@ -22,21 +22,33 @@ describe('the body', () => {
   // U+1F389, two UTF-16 units and one code point, as mb_strlen counts it.
   const party = '\u{1f389}'
 
-  test('may be one to 4000 code points', () => {
-    expect(BODY_MAX).toBe(4000)
-    expect(checkBody('x')).toEqual({ kind: 'ok' })
-    expect(checkBody(party.repeat(4000))).toEqual({ kind: 'ok' })
-    expect(party.repeat(4000).length).toBe(8000)
-    expect(checkBody(`${'a'.repeat(3999)}${party}`)).toEqual({ kind: 'ok' })
+  test('holds the limits of upstream 230c004', () => {
+    expect(BODY_RAW_MAX).toBe(40000)
+    expect(BODY_COUNT_MAX).toBe(4000)
+    expect(LINK_COUNTED_MAX).toBe(23)
+    expect(LINK_MAX).toBe(2048)
   })
 
-  test('is refused over 4000 code points', () => {
-    expect(checkBody(party.repeat(4001))).toEqual({ kind: 'too-long', length: 4001 })
-    expect(checkBody(`${'a'.repeat(4000)}${party}`)).toEqual({ kind: 'too-long', length: 4001 })
+  test('may be one to 40000 code points: the link-aware 4000 is the server\'s to judge', () => {
+    expect(checkBody('x')).toEqual({ kind: 'ok' })
+    for (const length of [4000, 4001, 39999, 40000]) {
+      expect(checkBody('a'.repeat(length))).toEqual({ kind: 'ok' })
+      expect(checkBody(party.repeat(length))).toEqual({ kind: 'ok' })
+    }
+    expect(party.repeat(40000).length).toBe(80000)
+    expect(checkBody(`${'a'.repeat(39999)}${party}`)).toEqual({ kind: 'ok' })
+    // A long link is the server's to refuse too.
+    expect(checkBody(`see https://example.com/${'a'.repeat(3000)}`)).toEqual({ kind: 'ok' })
+  })
+
+  test('is refused over 40000 code points', () => {
+    expect(checkBody('a'.repeat(40001))).toEqual({ kind: 'too-long', length: 40001 })
+    expect(checkBody(party.repeat(40001))).toEqual({ kind: 'too-long', length: 40001 })
+    expect(checkBody(`${'a'.repeat(40000)}${party}`)).toEqual({ kind: 'too-long', length: 40001 })
   })
 
   test('is measured after trimming, as the server trims it', () => {
-    expect(checkBody(`  ${party.repeat(4000)}\n\n`)).toEqual({ kind: 'ok' })
+    expect(checkBody(`  ${party.repeat(40000)}\n\n`)).toEqual({ kind: 'ok' })
   })
 
   test('is refused when only whitespace is left', () => {
@@ -50,10 +62,10 @@ describe('the body', () => {
     for (const blank of ['\u0085', '\u180e', '\u0000', '\u0000 \u0085\u180e\u2028\u202f\u205f']) {
       expect(checkBody(blank)).toEqual({ kind: 'empty' })
     }
-    expect(checkBody(`\u0085${'a'.repeat(4000)}\u180e\u0000`)).toEqual({ kind: 'ok' })
+    expect(checkBody(`\u0085${'a'.repeat(40000)}\u180e\u0000`)).toEqual({ kind: 'ok' })
     // trim strips U+FEFF, which mb_trim keeps and counts.
     expect(checkBody('\ufeff')).toEqual({ kind: 'ok' })
-    expect(checkBody(`${'a'.repeat(4000)}\ufeff`)).toEqual({ kind: 'too-long', length: 4001 })
+    expect(checkBody(`${'a'.repeat(40000)}\ufeff`)).toEqual({ kind: 'too-long', length: 40001 })
     // U+200B is not whitespace to either.
     expect(checkBody('\u200b')).toEqual({ kind: 'ok' })
   })

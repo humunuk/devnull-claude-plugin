@@ -4,12 +4,12 @@ import {
   SEEN_MAX,
   alertLine,
   commitListUrls,
-  dismissAlerts,
   intervalSecondsOf,
   isAlertsOn,
   parseSeen,
   readListResponse,
   reconcile,
+  seeAlerts,
   statusText,
   storedSeen,
 } from '../hooks/lib/alerts'
@@ -240,13 +240,13 @@ describe('comparing the counts with the seen record', () => {
   })
 })
 
-describe('dismissing', () => {
+describe('seeing the alerts (opening the pane)', () => {
   test('marks each alert seen and told at its count, keeping the rest', () => {
-    expect(dismissAlerts(record({ 1: [1, 4], 2: 0 }), [alert(1, 4, 3)])).toEqual(record({ 1: 4, 2: 0 }))
+    expect(seeAlerts(record({ 1: [1, 4], 2: 0 }), [alert(1, 4, 3)])).toEqual(record({ 1: 4, 2: 0 }))
   })
 
   test('never lowers what was told', () => {
-    expect(dismissAlerts(record({ 1: [1, 6] }), [alert(1, 4, 3)])).toEqual(record({ 1: [4, 6] }))
+    expect(seeAlerts(record({ 1: [1, 6] }), [alert(1, 4, 3)])).toEqual(record({ 1: [4, 6] }))
   })
 })
 

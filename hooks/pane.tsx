@@ -1,10 +1,21 @@
-// The pane: bare `/devnull` opens it, or closes it when it is open. Under its
-// header, a tab row: Mine, the person's newest commits (hooks/pane-core.ts
-// loads them on every open), drawn in a `git log` style with the reply
-// alerts' `+N new` marks; and Following, the newest commits of the people the
+// The pane: bare `/devnull` opens it, or closes it when it is open. It opens
+// asking for the keyboard (`focus`), so its hotkeys work at once; Escape hands
+// the keys back to the prompt, which the header's `esc to return` hint says
+// while the pane has them (at the prompt, Esc would interrupt a turn).
+// Under its header, a tab row: Mine, the person's newest commits
+// (hooks/pane-core.ts loads them on every open), drawn in a `git log` style
+// with `+N new` marks; and Following, the newest commits of the people the
 // person follows, from a round hooks/pane-core.ts runs when the tab is opened,
 // switched to or refreshed, at most once a minute. The tab lives in `$.state`,
 // so a reopen shows the last one. Latest and Trending join the row in phase 2.
+//
+// Opening the pane, once a surface draws it, counts as seeing the new replies
+// (seeReplyAlerts): the status line clears, and the alerts taken off show are
+// kept in `$.state` as the pane's own marks, so it goes on drawing their
+// `+N new` while it stays open, whatever the next poll brings. Alerts that
+// come while it is open are drawn beside them, from the reply alerts' own
+// state. Mine's rows are top-level commits, so answers to the person's own
+// replies get a `New replies` section of their own at the top of Mine.
 //
 // Under Mine, below a rule at the bottom, the input: Enter posts a new commit
 // through the same postCommit `/devnull commit` uses, signed by the person's
@@ -21,6 +32,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, RenderSurface, UiInputArgument } from 'claude-code'
 
+import type { ReplyAlert } from '../types'
 import { FAILED_TEXT, splitSubcommand } from './lib/command'
 import { followingView } from './lib/following'
 import { checkBody } from './lib/payload'
@@ -38,19 +50,19 @@ import {
   startPost,
 } from './lib/pane'
 import type { PostResult } from './lib/posting'
-import { readReplyAlerts } from './alerts'
+import { readReplyAlerts, seeReplyAlerts } from './alerts'
 import {
   PANE_ID,
   followRound,
   isPaneOpen,
   keepTicking,
   load,
-  paneClosed,
   readFollowing,
   readLoad,
   reloadPaneIfOpen,
   shutPane,
   startTicker,
+  stopPane,
 } from './pane-core'
 import { postCommit, postingIo, tooLongText } from './posting'
 import { readRecent } from './recent'
@@ -66,7 +78,14 @@ export const POST_LOST_TOAST =
 
 export const TAB_FAILED_TOAST = '/devnull could not switch tabs: Claude Code refused a step.'
 
+export const MARKS_FAILED_TOAST = '/devnull could not keep the new replies marked in the pane: Claude Code refused a step.'
+
 export const INPUT_LABEL = 'commit \u203a'
+
+/** Beside `r refresh` in the header while the pane has the keys: Escape hands them back to the prompt (`Pane` in the engine's types). */
+export const ESC_HINT = 'esc to return'
+
+export const NEW_REPLIES_TITLE = 'New replies'
 
 const INPUT_PLACEHOLDER = 'a new commit; Enter posts it'
 
@@ -84,6 +103,8 @@ export const TABS: readonly { tab: PaneTab; hotkey: string; label: string }[] = 
 const POST = atom({ plugin: 'devnull', key: 'panePost' } as const, NO_POST)
 
 const TAB = atom({ plugin: 'devnull', key: 'paneTab' } as const, 'mine')
+
+const MARKS = atom({ plugin: 'devnull', key: 'paneMarks' } as const, [])
 
 /**
  * Whether `e` (a drawing, or a submit) is on the surface the input, and
@@ -107,7 +128,13 @@ export function registerPane(on: On): void {
     }
 
     const tab = await read($, TAB)
-    const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE })
+    // `focus` is a request: the surface refuses it while the person holds
+    // another element, has text in the composer, or a dialog is up.
+    const opened = await $.ui.open({ id: PANE_ID, title: PANE_TITLE, focus: true })
+    // The replies count as seen only once a surface draws the pane. One that
+    // waits undrawn keeps them on show, and drops the marks of an earlier
+    // open, which were seen then.
+    await keepMarks($, opened.isPlaced ? await seeReplyAlerts($) : [])
     startTicker($)
     // Not awaited: a fetch that gets no answer takes 30 s to fail, and the
     // pane says it is loading meanwhile. On Following, the round's requests
@@ -118,8 +145,10 @@ export function registerPane(on: On): void {
     return opened.isPlaced ? {} : { text: NOT_PLACED_TEXT }
   }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
 
+  // The person's own close (the close mark, ctrl+x x) stops what the pane
+  // runs as `/devnull` does; the mod's own closes raise it too.
   on('ui.close', { id: PANE_ID }, ($, e, next) => {
-    paneClosed()
+    stopPane()
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -130,7 +159,8 @@ export function registerPane(on: On): void {
     const tab = await read($, TAB)
     const loadNow = await readLoad($)
     const nowMs = await $.clock.now()
-    const view = paneView(loadNow, await readRecent($), await readReplyAlerts($), nowMs, e.surface)
+    const marks = [...(await read($, MARKS)), ...(await readReplyAlerts($))]
+    const view = paneView(loadNow, await readRecent($), marks, nowMs, e.surface)
     const following = tab === 'following' ? followingView(await readFollowing($), nowMs, e.surface) : undefined
     const freshness = following === undefined ? view.freshness : following.freshness
     const refresh = () => (tab === 'following' ? followRound($, 'refresh') : load($))
@@ -143,6 +173,7 @@ export function registerPane(on: On): void {
           </Text>
           <Box flexDirection="row" flexShrink={0}>
             <Button key="refresh" label="refresh" hotkey="r" plain dimColor onPress={refresh} />
+            {e.props.isFocused && <Text color="subtle"> {'\u00b7'} {ESC_HINT}</Text>}
             {freshness !== '' && <Text color="subtle"> {'\u00b7'} {freshness}</Text>}
             {following?.wait !== undefined && <Text color="warning"> {'\u00b7'} {following.wait}</Text>}
           </Box>
@@ -193,6 +224,33 @@ export function registerPane(on: On): void {
     const list = (
       <Box key="list" flexDirection="column">
         {header}
+        {view.newReplies.length > 0 && (
+          <Box key="new-replies" flexDirection="column" marginTop={1}>
+            <Text weight="bold">{NEW_REPLIES_TITLE}</Text>
+            {view.newReplies.map(reply => (
+              <Box key={`reply-${reply.id}`} flexDirection="row" columnGap={1}>
+                <Box flexShrink={0}>
+                  <Text color="warning">{reply.hash}</Text>
+                </Box>
+                {reply.line !== '' && (
+                  <Box flexShrink={1}>
+                    <Text wrap="truncate-end">{reply.line}</Text>
+                  </Box>
+                )}
+                <Box flexShrink={0}>
+                  <Text color="success" weight="bold">
+                    {newRepliesText(reply.newReplies)}
+                  </Text>
+                </Box>
+                {reply.href !== undefined && (
+                  <Box flexShrink={0}>
+                    <Link href={reply.href} label={'open \u2197'} />
+                  </Box>
+                )}
+              </Box>
+            ))}
+          </Box>
+        )}
         {view.message !== undefined && (
           <Text color={loadNow.kind === 'failed' ? 'error' : 'subtle'}>{view.message}</Text>
         )}
@@ -313,6 +371,19 @@ async function submit($: EngineInterface, value: string, input: UiInputArgument)
     if (result.committed !== null) await reloadPaneIfOpen($)
   } catch {
     $.ui.toast(POST_LOST_TOAST)
+  }
+}
+
+/**
+ * Replaces the pane's marks with the alerts its open took off show. Writes
+ * nothing when there were none and none are kept. Never rejects.
+ */
+async function keepMarks($: EngineInterface, seen: ReplyAlert[]): Promise<void> {
+  try {
+    if (seen.length === 0 && (await read($, MARKS)).length === 0) return
+    await update($, MARKS, () => seen)
+  } catch {
+    $.ui.toast(MARKS_FAILED_TOAST)
   }
 }
 

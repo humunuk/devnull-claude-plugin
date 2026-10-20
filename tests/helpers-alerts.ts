@@ -1,7 +1,8 @@
 // The world beneath the reply alerts in a test: a clock that moves only when
 // the test moves it, dev-null.sh answering the two commit lists, a store in
-// memory that records each write (or refuses them), and the band's
-// neighbours (status line, toasts, debug log) recorded as they are called.
+// memory that records each write (or refuses them), the engine's record of
+// open panes, and the status line, toasts and debug log recorded as they are
+// called.
 
 import type { On } from 'claude-code'
 import type { Engine, MockClock } from 'claude-code/testing'
@@ -46,6 +47,8 @@ export type AlertsWorld = {
   recent: unknown[]
   /** Requests whose answer has not come yet. */
   pending: () => number
+  /** The ids of the panes the engine holds open. */
+  open: Set<string>
 }
 
 export function alertsWorld(
@@ -56,6 +59,8 @@ export function alertsWorld(
     server?: AlertsWorld['server']
     /** Listing the open panes is refused, so `/devnull off` cannot close the pane. */
     arePanesBroken?: boolean
+    /** How the engine takes `$.ui.open`: drawn (the default), opened but waiting undrawn, or refused. */
+    opens?: 'placed' | 'unplaced' | 'refused'
   } = {},
 ): AlertsWorld {
   const clock = mock.clock(on, { now: NOW })
@@ -72,14 +77,30 @@ export function alertsWorld(
     recent: [],
     server: options.server ?? { commits: ok([]), replies: ok([]) },
     pending: () => waiting,
+    open: new Set<string>(),
   }
   let waiting = 0
 
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
-  // No pane is open here: `/devnull off`, which closes it, finds none.
-  on('ui.panes', () => (options.arePanesBroken === true ? { deny: 'panes refused at /home/someone' } : { value: [] }))
+  // The pane opens and closes as the engine would; none is open at first.
+  on('ui.panes', () =>
+    options.arePanesBroken === true
+      ? { deny: 'panes refused at /home/someone' }
+      : { value: [...world.open].map(id => ({ id, title: id, isShown: true, isFocused: true, isPlaced: true })) },
+  )
+  on('ui.open', (_, e) => {
+    if (options.opens === 'refused') return { deny: 'open refused at /home/someone' }
+    world.open.add(e.id)
+
+    return { value: options.opens === 'unplaced' ? { isPlaced: false, reason: 'no-surface' } : { isPlaced: true } }
+  })
+  on('ui.close', (_, e) => {
+    world.open.delete(e.id)
+
+    return { value: undefined }
+  })
 
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
@@ -166,17 +187,3 @@ export async function devnullCommand(
 
   return text
 }
-
-export const BAND = {
-  plugin: 'devnull',
-  component: 'AbovePrompt',
-  requestId: 'above-prompt',
-  props: {
-    hasSurvey: false,
-    isWorking: false,
-    maxRows: 10,
-    bodyColumns: 80,
-    scroll: { offset: 0, bodyRows: 10 },
-    view: {},
-  },
-} as const

@@ -2,17 +2,20 @@
 // means, and where `/devnull` completions apply. Pure: hooks/posting.ts runs
 // the commands and sends the request.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6), `POST /api/cli/commits`:
-// AuthenticateSshSignature answers 401 when the signature, payload, timestamp
-// or nonce is refused, or the key is on no /dev/null user's GitHub account
-// (SignedCommits, SshSignatures). ThrottleCommits answers 429 with
-// `Retry-After` past 10 commits a minute, counted across every way of posting.
-// CreateCliCommitRequest answers 422 for a body outside 1 to 4000 characters
-// and for a reply reference that names no commit the user can see, or more
-// than one (CommitReference). bootstrap/app.php answers 503 when GitHub could
-// not be reached to check the key, and 500 for anything else that failed. The
-// route itself never answers 404: that comes only from a request that did not
-// reach this route. Every error body is plain text, and none of it is shown.
+// Upstream (nunomaduro/dev-null.sh at 3e55ca6, the body rule at 230c004),
+// `POST /api/cli/commits`: AuthenticateSshSignature answers 401 when the
+// signature, payload, timestamp or nonce is refused, or the key is on no
+// /dev/null user's GitHub account (SignedCommits, SshSignatures).
+// ThrottleCommits answers 429 with `Retry-After` past 10 commits a minute,
+// counted across every way of posting. CreateCliCommitRequest answers 422 for
+// a body CreateCommitRequest::bodyRules refuse (empty, over 40000 code points
+// raw, a link outside code over 2048 characters, or over 4000 characters
+// with each link outside code counted as at most 23; see lib/payload.ts) and for a reply reference that
+// names no commit the user can see, or more than one (CommitReference).
+// bootstrap/app.php answers 503 when GitHub could not be reached to check the
+// key, and 500 for anything else that failed. The route itself never answers
+// 404: that comes only from a request that did not reach this route. Every
+// error body is plain text, and none of it is shown.
 
 import type { HttpInit, HttpResponse } from 'claude-code'
 

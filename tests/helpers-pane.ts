@@ -7,7 +7,7 @@
 // unanswered until the test lets it go. A list request sent while another is
 // held is counted as an overlap: the pane sends one at a time.
 
-import type { CommandRunResult, HttpInit, HttpResponse, On, ProcessRunInit, PromptOrigin } from 'claude-code'
+import type { CommandRunResult, HttpInit, HttpResponse, On, PaneOpenArgs, ProcessRunInit, PromptOrigin } from 'claude-code'
 import { mock } from 'claude-code/testing'
 import type { Engine, MockClock } from 'claude-code/testing'
 
@@ -46,6 +46,8 @@ export type PaneWorld = {
   clock: MockClock
   /** The ids the engine holds open. */
   open: Set<string>
+  /** What each `$.ui.open` asked for, in order. */
+  opens: PaneOpenArgs[]
   /** How often the mod has asked which panes are open: the toggle, and each tick of its redraw timer. */
   panesAsked: () => number
   /** Sets what every request from now on gets. */
@@ -76,6 +78,7 @@ export function paneWorld(
   const files: PaneWorld['files'] = []
   const toasts: string[] = []
   const open = new Set<string>()
+  const opens: PaneOpenArgs[] = []
   let current: Answer = options.answer ?? 'unreachable'
   const byUrl = new Map<string, Answer>()
   let held: ((answer: Exclude<Answer, 'held'>) => void) | undefined
@@ -100,6 +103,7 @@ export function paneWorld(
 
   on('ui.open', (_, e) => {
     open.add(e.id)
+    opens.push(e)
 
     return { value: options.isPlaced === false ? { isPlaced: false, reason: 'no-surface' } : { isPlaced: true } }
   })
@@ -161,6 +165,7 @@ export function paneWorld(
     toasts,
     clock,
     open,
+    opens,
     panesAsked: () => panesAsked,
     answer: answer => {
       current = answer

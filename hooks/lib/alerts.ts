@@ -70,7 +70,7 @@ export const SEEN_MAX = 100
 
 /** What the person has seen of one commit, and what they were told of it. */
 export type SeenEntry = {
-  /** The `replies_count` the person has seen (dismissed, or found on the first poll). */
+  /** The `replies_count` the person has seen (on show when they opened the pane, or found on the first poll). */
   seen: number
   /** The highest `replies_count` a toast was raised for, so a rise is toasted once. */
   toasted: number
@@ -191,8 +191,8 @@ export function reconcile(
   return { seen, alerts, rises, isChanged: isFirst || !sameEntries(kept.entries, entries) }
 }
 
-/** The record after the person dismissed `alerts`: each one's count is seen (and counts as told). */
-export function dismissAlerts(kept: SeenReplies, alerts: readonly ReplyAlert[]): SeenReplies {
+/** The record after the person saw `alerts` (they opened the pane): each one's count is seen (and counts as told). */
+export function seeAlerts(kept: SeenReplies, alerts: readonly ReplyAlert[]): SeenReplies {
   const entries: Record<string, SeenEntry> = { ...kept.entries }
   for (const alert of alerts) {
     const before = entries[alert.id]
@@ -203,16 +203,11 @@ export function dismissAlerts(kept: SeenReplies, alerts: readonly ReplyAlert[]):
   return { username: kept.username, entries }
 }
 
-/** `\u21b3 3 new replies on`, or `\u21b3 1 new reply on`: the line before the hash. */
-export function alertLead(alert: ReplyAlert): string {
+/** The toast, `\u21b3 3 new replies on 1a2b3c4`, or `\u21b3 1 new reply on 1a2b3c4`. */
+export function alertLine(alert: ReplyAlert): string {
   const noun = alert.newReplies === 1 ? 'reply' : 'replies'
 
-  return `\u21b3 ${alert.newReplies} new ${noun} on`
-}
-
-/** `\u21b3 3 new replies on 1a2b3c4`. */
-export function alertLine(alert: ReplyAlert): string {
-  return `${alertLead(alert)} ${alert.shortHash}`
+  return `\u21b3 ${alert.newReplies} new ${noun} on ${alert.shortHash}`
 }
 
 /** The status line, `devnull \u21b3N` with the total of new replies, or undefined (cleared) at 0. */

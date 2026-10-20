@@ -48,8 +48,8 @@ export type ReplyAlert = {
 }
 
 /**
- * The reply alerts' session state: what the band and the status line show,
- * and what the poller needs to go on politely after a hot reload.
+ * The reply alerts' session state: what the status line counts and the pane
+ * marks, and what the poller needs to go on politely after a hot reload.
  */
 export type ReplyAlerts = {
   alerts: ReplyAlert[]
@@ -156,6 +156,14 @@ declare module 'claude-code' {
       }
       /** The reply alerts; see hooks/alerts.tsx. */
       replyAlerts: ReplyAlerts
+      /**
+       * The alerts on show when the pane last opened and was drawn
+       * (hooks/pane.tsx): that open marked them seen, and the pane keeps
+       * drawing their `+N new` (and the `New replies` rows) until it closes,
+       * beside the alerts that came since. Each open replaces them; one left
+       * undrawn empties them.
+       */
+      paneMarks: ReplyAlert[]
       /** The pane's tab (hooks/pane.tsx), kept so a reopen shows the last one. */
       paneTab: 'mine' | 'following'
       /**

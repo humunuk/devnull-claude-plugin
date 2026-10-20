@@ -16,7 +16,7 @@ import {
 import type { PaneLoad } from '../hooks/lib/pane'
 import { OFF_TEXT, ON_TEXT } from '../hooks/alerts'
 import { COMMITTED_TEXT, PANE_EMPTY_TEXT, POSTING_TEXT, POST_STALE_MS, STALE_POST_TEXT } from '../hooks/lib/pane'
-import { INPUT_LABEL, NOT_PLACED_TEXT, isPostingSurface } from '../hooks/pane'
+import { ESC_HINT, INPUT_LABEL, NOT_PLACED_TEXT, isPostingSurface } from '../hooks/pane'
 import { LOAD_FAILED_TOAST, TICK_MS } from '../hooks/pane-core'
 import {
   NO_ACCOUNT_TEXT,
@@ -31,6 +31,7 @@ import { devnull } from './helpers'
 import {
   ACCOUNT,
   NOW,
+  PANE_PROPS,
   POST_URL,
   RULE,
   SURFACES,
@@ -48,7 +49,7 @@ const LIST_URL = `https://dev-null.sh/api/v1/users/${USERNAME}/commits`
 
 const ok = (items: readonly unknown[]): Exclude<Answer, 'held'> => ({ status: 200, text: JSON.stringify(apiList(items)) })
 
-const HEADER = `/dev/null \u00b7 @${USERNAME}r: refresh`
+const HEADER = `/dev/null \u00b7 @${USERNAME}r: refresh \u00b7 esc to return`
 
 // The tab row under the header, Mine shown.
 const TABS_ROW = '1: Mine2: Following'
@@ -112,6 +113,19 @@ describe('bare /devnull', () => {
     expect([...world.open]).toEqual([])
     expect(await toggle($)).toEqual({})
     expect([...world.open]).toEqual(['devnull'])
+  })
+
+  test('opens the pane asking for the keyboard, on every open', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]) })
+    await start($)
+
+    await openPane($, world)
+    await closePane($, world)
+    await openPane($, world)
+    expect(world.opens).toEqual([
+      { id: 'devnull', title: '/dev/null', focus: true },
+      { id: 'devnull', title: '/dev/null', focus: true },
+    ])
   })
 
   test('opens it again after the person closed it', async ($, on) => {
@@ -228,13 +242,43 @@ describe('the pane', () => {
       ])
     })
 
+    test(`says in the header, dim and beside r refresh, that esc returns to the prompt while the pane has the keys, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]) })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      const hint = await ui.find({ type: 'Text', text: ESC_HINT })
+      expect(hint?.text).toBe(` \u00b7 ${ESC_HINT}`)
+      expect(hint?.props).toEqual({ color: 'subtle' })
+      expect(listRowsOf(await ui.drawn())[0]).toBe(`/dev/null \u00b7 @${USERNAME}r: refresh \u00b7 esc to return \u00b7 updated now`)
+      await ui.unmount()
+    })
+
+    test(`draws no esc hint while the pane does not have the keys, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]) })
+      await start($)
+      await openPane($, world)
+
+      const ui = await $.ui.mount({
+        plugin: 'devnull',
+        component: 'Pane',
+        requestId: 'devnull',
+        surface,
+        props: { ...PANE_PROPS, isFocused: false },
+      })
+      expect(await ui.find({ type: 'Text', text: ESC_HINT })).toBeUndefined()
+      expect(listRowsOf(await ui.drawn())[0]).toBe(`/dev/null \u00b7 @${USERNAME}r: refresh \u00b7 updated now`)
+      await ui.unmount()
+    })
+
     test(`says to run setup when no account is kept, and sends nothing, on ${surface}`, async ($, on) => {
       const world = paneWorld(on, { answer: ok([apiCommit(1)]) })
       await start($)
       await openPane($, world)
 
       expect(world.requests).toHaveLength(0)
-      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', TABS_ROW, NOT_SET_UP_TEXT])
+      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh \u00b7 esc to return', TABS_ROW, NOT_SET_UP_TEXT])
     })
 
     test(`takes an account the store holds in another shape as none, on ${surface}`, async ($, on) => {
@@ -243,7 +287,7 @@ describe('the pane', () => {
       await openPane($, world)
 
       expect(world.requests).toHaveLength(0)
-      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', TABS_ROW, NOT_SET_UP_TEXT])
+      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh \u00b7 esc to return', TABS_ROW, NOT_SET_UP_TEXT])
     })
 
     test(`says it is loading while the request is out, then draws the list, on ${surface}`, async ($, on) => {
@@ -393,6 +437,7 @@ describe('the pane', () => {
       expect(await ui.findAll({ type: 'Input' })).toHaveLength(0)
       expect(await ui.find({ type: 'Text', text: 'invented commit number 1' })).toBeDefined()
       expect((await ui.find({ type: 'Button', key: 'refresh' }))?.props).toMatchObject({ label: 'refresh', hotkey: 'r' })
+      expect(await ui.find({ type: 'Text', text: ESC_HINT })).toBeDefined()
       expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkOn(surface, commitId(1))])
       expect(composeRowsOf(await ui.drawn())).toEqual([])
       await ui.unmount()
@@ -707,7 +752,7 @@ describe('a failure inside the load', () => {
     await openPane($, world)
 
     expect(world.requests).toHaveLength(0)
-    expect(await rows($, 'terminal')).toEqual(['/dev/nullr: refresh', TABS_ROW, LOCAL_TEXT])
+    expect(await rows($, 'terminal')).toEqual(['/dev/nullr: refresh \u00b7 esc to return', TABS_ROW, LOCAL_TEXT])
     expect(world.toasts).toEqual([])
   })
 
@@ -902,15 +947,15 @@ describe('the input', () => {
       await ui.unmount()
     })
 
-    test(`refuses a body over 4000 characters before anything runs, and keeps it, on ${surface}`, async ($, on) => {
+    test(`refuses a body over 40000 characters before anything runs, and keeps it, on ${surface}`, async ($, on) => {
       const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: CREATED })
       await start($)
       await openPane($, world)
-      const long = '\u{1f389}'.repeat(4001)
+      const long = '\u{1f389}'.repeat(40001)
 
       const ui = await mountPane($, surface)
       await ui.input({ key: 'commit-0', text: long })
-      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} [${long}]`, tooLongText(4001)])
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} [${long}]`, tooLongText(40001)])
       expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ key: 'commit-1', value: long })
       expect(world.runs).toEqual([])
       expect(world.posts).toEqual([])
@@ -925,8 +970,10 @@ describe('the input', () => {
       const ui = await mountPane($, surface)
       await ui.input({ key: 'commit-0', text: 'hello' })
       const drawn = composeRowsOf(await ui.drawn())
-      expect(drawn).toEqual([RULE, `${INPUT_LABEL} [hello]`, REFUSED_COMMIT_TEXT])
-      expect((await ui.find({ type: 'Text', text: REFUSED_COMMIT_TEXT }))?.props).toEqual({ color: 'error' })
+      expect(drawn).toEqual([RULE, `${INPUT_LABEL} [hello]`, ...REFUSED_COMMIT_TEXT.split('\n')])
+      for (const line of REFUSED_COMMIT_TEXT.split('\n')) {
+        expect((await ui.find({ type: 'Text', text: line }))?.props).toEqual({ color: 'error' })
+      }
       expect(drawn.join('\n')).not.toContain('IGNORE')
       expect(drawn.join('\n')).not.toMatch(UNSAFE)
       expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)

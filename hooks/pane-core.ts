@@ -17,9 +17,10 @@
 // only one whose answer can never come back is that old), and the next goes
 // ahead of it. A 429 with Retry-After on any of them holds back both the
 // load and the round (`paneNotBeforeMs` in `$.state`): they share the lane
-// and the per-IP limit. Closing the pane (`/devnull`, `/devnull off`) and the
-// session's end stop the requests the pane started: one not yet sent is not
-// sent, and a round ends with what arrived.
+// and the per-IP limit. Every close of the pane (`/devnull`, `/devnull off`,
+// the person's own close mark or ctrl+x x) and the session's end stop the
+// requests the pane started (stopPane): one not yet sent is not sent, and a
+// round ends with what arrived.
 //
 // The lane is a module variable: a hot reload starts a new one. reference.md
 // says of a reload only that `register` runs again in a fresh environment and
@@ -35,10 +36,9 @@
 // it once a minute. The timer lives in a module variable, not `$.state` (it is
 // no value): a hot reload drops the old environment's timers along with the
 // variable (reference.md: "the previous environment's timers are dropped"),
-// and the next drawing of a pane still open starts one again. It stops on
-// every close the mod makes (`/devnull`, `/devnull off`), on the person's close
-// (`ui.close`), at the first tick that finds the pane gone, and at
-// `session.end` (rule 8).
+// and the next drawing of a pane still open starts one again. It stops with
+// the requests on every close and at `session.end` (stopPane), and at the
+// first tick that finds the pane gone (rule 8).
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HttpResponse, StateDollar, Timer } from 'claude-code'
@@ -62,7 +62,18 @@ import {
   userFollowingUrl,
 } from './lib/following'
 import type { FollowAnswer, FollowingState, RoundTrigger } from './lib/following'
-import { COMMITS_REQUEST, LOAD_STALE_MS, failedLoad, fetchedAtOf, finishLoad, pageOf, readCommitsAnswer, startLoad, userCommitsUrl } from './lib/pane'
+import {
+  COMMITS_REQUEST,
+  LOAD_STALE_MS,
+  dropLoad,
+  failedLoad,
+  fetchedAtOf,
+  finishLoad,
+  pageOf,
+  readCommitsAnswer,
+  startLoad,
+  userCommitsUrl,
+} from './lib/pane'
 import type { CommitsAnswer, PaneLoad, PaneProblem } from './lib/pane'
 import { storeRecent } from './recent'
 
@@ -97,9 +108,29 @@ let lastTurn: Turn = { settled: Promise.resolve(), startedAtMs: undefined }
 /** How often the pane's requests were stopped: a request or round started under another count is stopped. */
 let stops = 0
 
-/** Stops the requests the pane started: closePane, shutPane and endPane call it. */
+/**
+ * The load that holds the claim in `$.state` (its token), the stop count it
+ * claimed under, and whether its request went out. One claimed before the
+ * last stop whose request never went out (it waited in the lane, and the
+ * stop keeps it from going) gives way to the next load, which a reopen
+ * starts; one whose request is out is waited for, as any load in flight. A
+ * hot reload forgets it; LOAD_STALE_MS then lets that load go.
+ */
+let loadClaim: { token: string; stops: number; isSent: boolean } | undefined
+
+/** Stops the requests the pane started: stopPane calls it. */
 function stopRequests(): void {
   stops += 1
+}
+
+/**
+ * Stops the pane's redraw timer and the requests it started. Every close
+ * calls it: `/devnull` (shutPane), `/devnull off` (closePane), the person's
+ * own close (the pane's `ui.close` hook), and the session's end (endPane).
+ */
+export function stopPane(): void {
+  stopTicker(ticker)
+  stopRequests()
 }
 
 /**
@@ -145,15 +176,13 @@ export async function isPaneOpen($: EngineInterface): Promise<boolean> {
 
 /** Closes the pane, which must be open, and stops its redraw timer and its requests. */
 export async function shutPane($: EngineInterface): Promise<void> {
-  stopTicker(ticker)
-  stopRequests()
+  stopPane()
   await $.ui.close({ id: PANE_ID })
 }
 
 /** Closes the pane when it is open; its redraw timer and its requests stop either way. */
 export async function closePane($: EngineInterface): Promise<void> {
-  stopTicker(ticker)
-  stopRequests()
+  stopPane()
   if (await isPaneOpen($)) await $.ui.close({ id: PANE_ID })
 }
 
@@ -176,13 +205,7 @@ export async function reloadPaneIfOpen($: EngineInterface): Promise<void> {
  * single unmatched hook per event across the mod.
  */
 export function endPane(): void {
-  stopTicker(ticker)
-  stopRequests()
-}
-
-/** The person closed the pane: its redraw timer stops. */
-export function paneClosed(): void {
-  stopTicker(ticker)
+  stopPane()
 }
 
 /** Starts the redraw timer, in place of any this environment runs already. */
@@ -231,19 +254,42 @@ export type PaneIo = {
   readNotBefore: () => Promise<number>
   /** Holds the pane's requests back until `atMs`, or later when they are already. */
   holdUntil: (atMs: number) => Promise<unknown>
+  /** Whether the pane's requests were stopped (closed, off, session end) since this load began. */
+  isStopped: () => boolean
+  /** Keeps the load named `token` as the one holding the claim, under the stop count now. */
+  holdClaim: (token: string) => void
+  /** Whether the load named `token` claimed before the pane's requests were last stopped, and its request never went out. */
+  isClaimStopped: (token: string) => boolean
 }
 
 /** Starts a load with this `$`; never rejects, and says so when it could not even record its failure. */
 export async function load($: EngineInterface): Promise<void> {
+  const stopsAtStart = stops
+  let ownToken: string | undefined
   const io: PaneIo = {
     now: () => $.clock.now(),
     newToken: () => crypto.randomUUID(),
     readAccount: () => $.store.get(ACCOUNT_KEY),
-    fetchCommits: url => inLane(() => $.clock.now(), () => $.http.fetch(url, COMMITS_REQUEST)),
+    fetchCommits: url =>
+      inLane(
+        () => $.clock.now(),
+        () => {
+          if (loadClaim !== undefined && loadClaim.token === ownToken) loadClaim.isSent = true
+
+          return $.http.fetch(url, COMMITS_REQUEST)
+        },
+      ),
     storeCommits: (username, commits, nowMs) => storeRecent($, username, commits, nowMs),
     changeLoad: change => update($, LOAD, change),
     readNotBefore: () => read($, NOT_BEFORE),
     holdUntil: atMs => update($, NOT_BEFORE, current => Math.max(current, atMs)),
+    isStopped: () => stops !== stopsAtStart,
+    holdClaim: token => {
+      ownToken = token
+      loadClaim = { token, stops, isSent: false }
+    },
+    isClaimStopped: token =>
+      loadClaim !== undefined && loadClaim.token === token && loadClaim.stops !== stops && !loadClaim.isSent,
   }
 
   try {
@@ -256,7 +302,10 @@ export async function load($: EngineInterface): Promise<void> {
 /**
  * One load of the person's newest commits: nothing while another is in flight
  * or dev-null.sh asked to wait; else the list is fetched, checked, kept in
- * the recent list, and the load marked ready or failed. Rejects only when
+ * the recent list, and the load marked ready or failed. A load claimed before
+ * the pane's requests were stopped, whose request the stop kept from going
+ * out, gives way to this one, and gives up its claim without a failure when
+ * it learns of the stop (as dropRound does for a round). Rejects only when
  * `$.state` refuses to record a failure.
  */
 export async function runLoad(io: PaneIo): Promise<void> {
@@ -276,14 +325,26 @@ export async function runLoad(io: PaneIo): Promise<void> {
     const startedAtMs = await io.now()
     const mine = io.newToken()
     const notBeforeMs = await io.readNotBefore()
-    const claimed = await io.changeLoad(current => startLoad(current, name, mine, startedAtMs, notBeforeMs))
+    const claimed = await io.changeLoad(current => {
+      const before = current.kind === 'loading' && io.isClaimStopped(current.token) ? dropLoad(current, current.token) : current
+
+      return startLoad(before, name, mine, startedAtMs, notBeforeMs)
+    })
     if (claimed.kind !== 'loading' || claimed.token !== mine) return
     token = mine
+    io.holdClaim(mine)
 
     let answer: CommitsAnswer
     try {
       answer = readCommitsAnswer(await io.fetchCommits(url))
     } catch {
+      // Stopped before it went out (the pane closed): not a failure of
+      // dev-null.sh's, and the claim goes to the next load.
+      if (io.isStopped()) {
+        await io.changeLoad(current => dropLoad(current, mine))
+
+        return
+      }
       // No answer within 30 s, a refused connection, or the fetch was refused.
       answer = { kind: 'problem', problem: { kind: 'network' } }
     }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Plugin } from 'claude-code/testing'
 
 import {
   FOLLOWING_CUT_TEXT,
@@ -28,7 +28,7 @@ import type { Answer, PaneWorld } from './helpers-pane'
 
 const LIST_URL = commitsUrlOf(USERNAME)
 
-const HEADER = `/dev/null \u00b7 @${USERNAME}r: refresh`
+const HEADER = `/dev/null \u00b7 @${USERNAME}r: refresh \u00b7 esc to return`
 
 const TABS_ROW = '1: Mine2: Following'
 
@@ -94,6 +94,22 @@ async function rows($: Engine, surface: (typeof SURFACES)[number]): Promise<stri
 }
 
 const urls = (world: PaneWorld) => world.requests.map(request => request.url)
+
+/**
+ * Another plugin that closes the pane: its `$.ui.close` raises `ui.close` as
+ * the person's close mark or ctrl+x x does (origin `plugin` here, `person`
+ * there), which the kit cannot raise itself.
+ */
+const CLOSER: Plugin = {
+  name: 'closer',
+  register: on => {
+    on('command.run', { command: 'close-devnull' }, async $ => {
+      await $.ui.close({ id: 'devnull' })
+
+      return {}
+    })
+  },
+}
 
 describe('the tab row', () => {
   for (const surface of SURFACES) {
@@ -476,7 +492,7 @@ describe('the Following tab says', () => {
       await press($, world, 'tab-following', surface)
 
       expect(world.requests).toEqual([])
-      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', TABS_ROW, NOT_SET_UP_TEXT])
+      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh \u00b7 esc to return', TABS_ROW, NOT_SET_UP_TEXT])
     })
 
     test(`that the person follows nobody, on ${surface}`, async ($, on) => {
@@ -583,7 +599,7 @@ describe('the Following tab says', () => {
       await press($, world, 'tab-following', surface)
 
       expect(world.requests).toEqual([])
-      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', TABS_ROW, FOLLOWING_LOCAL_TEXT])
+      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh \u00b7 esc to return', TABS_ROW, FOLLOWING_LOCAL_TEXT])
       expect(world.toasts).toEqual([])
     })
   }
@@ -665,6 +681,59 @@ describe('closing the pane, /devnull off and the session end', () => {
       expect(world.requests).toHaveLength(2)
     })
   }
+
+  test("another's close of the pane (as the person's close mark raises it) stops a round waiting in the lane", { plugins: [CLOSER] }, async ($, on) => {
+    const people = [1, 2].map(friend)
+    const world = followingWorld(on, people)
+    await start($)
+    await openPane($, world)
+    world.answerFor(FOLLOWING_URL, 'held')
+    const ui = await mountPane($, 'terminal')
+    const pressed = ui.press({ key: 'tab-following' })
+    await world.clock.settle()
+    await ui.unmount()
+    expect(world.requests).toHaveLength(2)
+
+    await $.command.run({ command: 'close-devnull', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+    expect(world.open.has('devnull')).toBe(false)
+    world.release(follows(...people))
+    await pressed
+    await world.clock.settle()
+    expect(world.requests).toHaveLength(2)
+    // Its redraw timer stopped with it.
+    const asked = world.panesAsked()
+    await world.clock.advance(10 * ROUND_MIN_MS)
+    expect(world.panesAsked()).toBe(asked)
+  })
+
+  test('a Mine load the close kept from going out records no failure, and the reopen loads', async ($, on) => {
+    const people = [1].map(friend)
+    const world = followingWorld(on, people)
+    await start($)
+    await openPane($, world)
+    world.answerFor(FOLLOWING_URL, 'held')
+    const ui = await mountPane($, 'terminal')
+    const pressed = ui.press({ key: 'tab-following' })
+    await world.clock.settle()
+    await ui.press({ key: 'tab-mine' })
+    const refreshed = ui.press({ key: 'refresh' })
+    await world.clock.settle()
+    await ui.unmount()
+    expect(urls(world)).toEqual([LIST_URL, FOLLOWING_URL])
+
+    await closePane($)
+    expect(await toggle($)).toEqual({})
+    world.release(follows(...people))
+    await pressed
+    await refreshed
+    await world.clock.settle()
+    // The reopen's own load went out once the held request settled.
+    expect(urls(world)).toEqual([LIST_URL, FOLLOWING_URL, LIST_URL])
+    const drawn = await rows($, 'terminal')
+    expect(drawn).not.toContain(NETWORK_TEXT)
+    expect(drawn).toContain('my own commit')
+    expect(drawn[0]).toBe(`${HEADER} \u00b7 updated now`)
+  })
 
   test('a Mine load queued behind a held request is not sent once the pane is closed', async ($, on) => {
     const people = [1].map(friend)

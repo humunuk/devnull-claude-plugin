@@ -9,11 +9,13 @@ import {
   PAGE_SIZE,
   POST_STALE_MS,
   STALE_POST_TEXT,
+  dropLoad,
   failedLoad,
   fetchedAtOf,
   finishLoad,
   finishPost,
   isSending,
+  newReplyRows,
   pageOf,
   paneCommits,
   paneView,
@@ -200,6 +202,14 @@ describe('the commits drawn', () => {
     expect(drawn.map(commit => commit.newReplies)).toEqual([2, 0, 0])
   })
 
+  test('add up a mark held since the pane opened and an alert that came since, on one commit', () => {
+    const kept = recent([summary(1), summary(2)])
+    const held = [alert(1, 2), alert(2, 1)]
+    const since = [alert(1, 3)]
+    const drawn = paneCommits(kept, [commitId(1), commitId(2)], [...held, ...since], NOW, 'terminal')
+    expect(drawn.map(commit => commit.newReplies)).toEqual([5, 1])
+  })
+
   test('leave out replies and other authors, and hold one page', () => {
     const many = Array.from({ length: 30 }, (_, i) => summary(10 + i))
     const commits = [summary(1), summary(2, { parentId: commitId(1) }), summary(3, { username: 'someone-else' }), ...many]
@@ -223,6 +233,49 @@ describe('the commits drawn', () => {
   })
 })
 
+describe('the New replies rows', () => {
+  const kept = recent([
+    summary(1),
+    summary(2, { parentId: commitId(1), body: '\u001b[31mmy\u202e reply\nsecond line' }),
+    summary(3, { parentId: commitId(1) }),
+    summary(4, { parentId: commitId(1), username: 'someone-else' }),
+  ])
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`hold the person's own replies only, added up, cleaned to one line, on ${surface}`, () => {
+      // 1 is a top-level commit, 4 is not theirs, 9 is not in the list.
+      const rows = newReplyRows(kept, [alert(1, 1), alert(2, 2), alert(4, 1), alert(9, 1), alert(2, 1), alert(3, 1, 'someone-else')], surface)
+      const at = surface === 'terminal' ? '@' : '%40'
+      expect(rows).toEqual([
+        {
+          id: commitId(2),
+          hash: shortHashOf(commitId(2)),
+          line: 'my reply\u2026',
+          newReplies: 3,
+          href: `https://dev-null.sh/${at}${USERNAME}/commits/${commitId(2)}`,
+        },
+      ])
+    })
+  }
+
+  test('are none with no alerts', () => {
+    expect(newReplyRows(kept, [], 'terminal')).toEqual([])
+  })
+})
+
+describe('a load the pane stopped', () => {
+  test('gives up its claim: the page before it is ready again, or nothing', () => {
+    expect(dropLoad(LOADING, 'mine')).toEqual({ kind: 'ready', username: USERNAME, page: [commitId(5)], fetchedAtMs: NOW - 60_000 })
+    expect(dropLoad({ ...LOADING, page: [], fetchedAtMs: null }, 'mine')).toEqual({ kind: 'idle' })
+  })
+
+  test("changes nothing for another load's claim", () => {
+    expect(dropLoad(LOADING, 'other')).toBe(LOADING)
+    const ready: PaneLoad = { kind: 'ready', username: USERNAME, page: [], fetchedAtMs: NOW }
+    expect(dropLoad(ready, 'mine')).toBe(ready)
+  })
+})
+
 describe('the pane view', () => {
   test('says what each state needs saying', () => {
     expect(paneView({ kind: 'idle' }, null, [], NOW, 'terminal')).toEqual({
@@ -230,6 +283,7 @@ describe('the pane view', () => {
       freshness: '',
       message: IDLE_TEXT,
       hint: undefined,
+      newReplies: [],
       commits: [],
     })
     expect(paneView({ kind: 'ready', username: USERNAME, page: [], fetchedAtMs: NOW }, recent([summary(1)]), [], NOW, 'terminal')).toEqual({
@@ -237,6 +291,7 @@ describe('the pane view', () => {
       freshness: 'updated now',
       message: EMPTY_TEXT,
       hint: undefined,
+      newReplies: [],
       commits: [],
     })
     // Replies alone leave the pane empty.

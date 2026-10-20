@@ -8,7 +8,6 @@ import type { PromptAutocompleteSuggestion } from 'claude-code'
 import type { CommitSummary, RecentCommits } from '../../types'
 import { USERNAME } from './account'
 import { SHORT_HASH } from './commits'
-import { BODY_MAX } from './payload'
 import { cleanBody, cleanLine, relativeAge } from './text'
 
 export const RECENT_MAX = 100
@@ -17,6 +16,9 @@ export const MATCH_MAX = 10
 
 /** How much of a commit's first line a completion row shows. */
 export const MATCH_LINE_MAX = 50
+
+/** How much of a body is cleaned to find its first line with text. */
+const DESCRIBE_SCAN_MAX = 4000
 
 /**
  * The list after `incoming` arrived: each commit once by id (the incoming copy,
@@ -90,7 +92,7 @@ export function matchFollowingHashes(
 
 function describe(commit: CommitSummary, nowMs: number): string {
   // The first line with text, an ellipsis on it when more follows, then trimmed and capped.
-  const [line = ''] = cleanBody(commit.body, { maxLines: 1, maxCodePoints: BODY_MAX }).lines
+  const [line = ''] = cleanBody(commit.body, { maxLines: 1, maxCodePoints: DESCRIBE_SCAN_MAX }).lines
   const first = cleanLine(line, MATCH_LINE_MAX)
   const age = relativeAge(commit.createdAtMs, nowMs)
 

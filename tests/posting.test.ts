@@ -132,11 +132,19 @@ describe('/devnull commit', () => {
     expect(nonces[0]).not.toBe(nonces[1])
   })
 
-  test('takes a body of 4000 code points, emoji counted as one', async ($, on) => {
+  test('takes a body of 40000 code points, emoji counted as one', async ($, on) => {
     const world = postingWorld(on, { server: CREATED })
 
-    expect(await devnull($, `commit ${'\u{1f600}'.repeat(4000)}`)).toStartWith('Committed: ')
+    expect(await devnull($, `commit ${'\u{1f600}'.repeat(40000)}`)).toStartWith('Committed: ')
     expect(world.requests()).toHaveLength(1)
+  })
+
+  test('sends a body over 4000 characters: whether its links bring it under is the server\'s to judge', async ($, on) => {
+    const world = postingWorld(on, { server: CREATED })
+
+    expect(await devnull($, `commit ${'x'.repeat(4001)}`)).toStartWith('Committed: ')
+    expect(await devnull($, `commit see https://example.com/${'a'.repeat(4000)}`)).toStartWith('Committed: ')
+    expect(world.requests()).toHaveLength(2)
   })
 
   test('says when the commit is pending review', async ($, on) => {
@@ -207,10 +215,19 @@ describe('/devnull reply', () => {
     expect(world.events).toEqual([])
   })
 
-  test('explains a 422 as a reference problem', async ($, on) => {
+  test('explains a 422 as the body limits or the reference, in the mod\'s words', async ($, on) => {
     postingWorld(on, { server: { status: 422, text: SERVER_TEXT } })
 
-    expect(await devnull($, 'reply abc1234 hello')).toBe(REFUSED_REPLY_TEXT)
+    const text = await devnull($, 'reply abc1234 hello')
+    expect(text).toBe(REFUSED_REPLY_TEXT)
+    expect(text).toBe(
+      [
+        'dev-null.sh refused the reply (422), so nothing was posted.',
+        'Either its text is over the limits: a reply is at most 4000 characters (each link outside code counts as up to 23 characters); no link outside code longer than 2048 characters.',
+        "Or there is no commit with that hash that you can see, or the hash matches several commits: then reply with the commit's link instead.",
+      ].join('\n'),
+    )
+    expect(text).not.toContain('IGNORE')
   })
 })
 
@@ -241,11 +258,15 @@ describe('posting refuses before anything runs', () => {
     expect(world.events).toEqual([])
   })
 
-  test('a commit over 4000 code points', async ($, on) => {
+  test('a commit over 40000 code points', async ($, on) => {
     const world = postingWorld(on, { server: CREATED })
 
-    expect(await devnull($, `commit ${'x'.repeat(4001)}`)).toBe(tooLongText(4001))
-    expect(await devnull($, `commit ${'\u{1f600}'.repeat(4001)}`)).toBe(tooLongText(4001))
+    expect(await devnull($, `commit ${'x'.repeat(40001)}`)).toBe(tooLongText(40001))
+    expect(await devnull($, `commit ${'\u{1f600}'.repeat(40001)}`)).toBe(tooLongText(40001))
+    expect(await devnull($, `reply abc1234 ${'x'.repeat(40001)}`)).toBe(tooLongText(40001))
+    expect(tooLongText(40001)).toBe(
+      'That is 40001 characters; /dev/null takes at most 40000, and counts at most 4000 (each link outside code counts as up to 23 characters). Nothing was posted.',
+    )
     expect(world.events).toEqual([])
   })
 
@@ -512,6 +533,15 @@ describe('dev-null.sh answers', () => {
       expect(text).not.toContain('\u001b')
     })
   }
+
+  test('a 422 to a commit names both body limits and claims no more', () => {
+    expect(REFUSED_COMMIT_TEXT).toBe(
+      [
+        'dev-null.sh refused the commit (422), so nothing was posted.',
+        'A commit is at most 4000 characters (each link outside code counts as up to 23 characters); no link outside code longer than 2048 characters.',
+      ].join('\n'),
+    )
+  })
 
   test('texts that say the commit may be posted name the profile to check', () => {
     expect(unreachableText('some-user')).toContain('https://dev-null.sh/@some-user')

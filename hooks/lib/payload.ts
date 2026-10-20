@@ -2,19 +2,36 @@
 // anything is signed. Pure: the caller draws the random bytes, reads the clock
 // and runs ssh-keygen.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6): SignedCommits reads
-// `<unix seconds>\n<nonce>\n<reply reference or empty>\n<body>`, accepts a
-// time within 300 s of its clock and spends each nonce once. Commit measures
-// the body with mb_strlen after CommitBodies::normalize and mb_trim, and allows
-// 1 to 4000 characters. CommitByReferenceQuery takes a 7 to 12 character hex
-// hash, or anything holding one UUID.
+// Upstream (nunomaduro/dev-null.sh at 3e55ca6, the body rule at 230c004):
+// SignedCommits reads `<unix seconds>\n<nonce>\n<reply reference or
+// empty>\n<body>`, accepts a time within 300 s of its clock and spends each
+// nonce once. After CommitBodies::normalize and mb_trim, CreateCommitRequest's
+// bodyRules take a body of 1 to 40000 code points raw
+// (CommitBodyLength::MAX_RAW_LENGTH), with no prose link over 2048 characters
+// (Urls::MAX_LENGTH) and at most 4000 characters counted with each prose link
+// as at most 23 (Commit::MAX_BODY_LENGTH, Urls::characterCount); a link in
+// code counts at full length and is not held to 2048 (withoutCode). The mod
+// checks the raw length alone: the link-aware count and the link length
+// depend on the server's URL parsing, which a copy here would drift from, so
+// a body over them is the server's 422. CommitByReferenceQuery takes a 7 to 12
+// character hex hash, or anything holding one UUID.
 
 import { SHORT_HASH } from './commits'
 import { ORIGIN, UUID } from './links'
 
 export const NONCE_BYTES = 16
 
-export const BODY_MAX = 4000
+/** The most code points a body may hold raw, before links are counted short (CommitBodyLength::MAX_RAW_LENGTH). */
+export const BODY_RAW_MAX = 40000
+
+/** The most characters a body may count, each link as at most LINK_COUNTED_MAX (Commit::MAX_BODY_LENGTH); the server's to judge. */
+export const BODY_COUNT_MAX = 4000
+
+/** What one link outside code in a body counts as at most (Urls::characterCount); a link in code counts in full. */
+export const LINK_COUNTED_MAX = 23
+
+/** The longest link a body may hold outside code (Urls::MAX_LENGTH). */
+export const LINK_MAX = 2048
 
 const NONCE = /^[0-9a-f]{32}$/
 
@@ -34,17 +51,18 @@ export function newNonce(bytes: Uint8Array): string {
 export type BodyCheck = { kind: 'ok' } | { kind: 'empty' } | { kind: 'too-long'; length: number }
 
 /**
- * Whether dev-null.sh can take this body: something left after trimming, and
- * at most 4000 characters, counted in code points as PHP's mb_strlen counts
- * them (an emoji is one, not two UTF-16 units). The server trims before it
- * measures, so the body is trimmed as mb_trim trims it and then measured; it
- * is sent as typed.
+ * Whether the body is worth signing: something left after trimming, and at
+ * most BODY_RAW_MAX code points, counted as PHP's mb_strlen counts them (an
+ * emoji is one, not two UTF-16 units). The server trims before it measures,
+ * so the body is trimmed as mb_trim trims it and then measured; it is sent as
+ * typed. A body that passes may still count over BODY_COUNT_MAX, or hold a
+ * link over LINK_MAX: the server refuses that with a 422.
  */
 export function checkBody(text: string): BodyCheck {
   const trimmed = text.replace(MB_TRIM, '')
   if (trimmed === '') return { kind: 'empty' }
   const length = Array.from(trimmed).length
-  if (length > BODY_MAX) return { kind: 'too-long', length }
+  if (length > BODY_RAW_MAX) return { kind: 'too-long', length }
 
   return { kind: 'ok' }
 }

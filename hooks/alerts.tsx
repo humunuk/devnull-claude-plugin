@@ -1,14 +1,17 @@
 // Reply alerts: while an account is set up and alerts are on, poll the
-// person's newest commits and replies, and when a `replies_count` rises show
-// it in the band above the prompt, the status line and a toast.
+// person's newest commits and replies, and when a `replies_count` rises say so
+// in a toast, once per rise, and as a count in the status line. There is no
+// band above the prompt, and the status line cannot be pressed: opening the
+// pane is what marks the replies seen (seeReplyAlerts), and the pane reads
+// the alerts on show through readReplyAlerts, for its `+N new` marks.
 // `/devnull off` and `/devnull on` stop and resume it, kept in `$.store`;
-// `/devnull off` also closes the pane. The pane reads the alerts on show
-// through readReplyAlerts, for its `+N new` marks.
+// `/devnull off` also closes the pane.
 //
 // What is compared and kept is pure, in lib/alerts.ts. This module holds the
-// poller, the band and the two subcommands. Every call on `$` goes through an
-// AlertsIo built in the hook that owns that `$`, so validate sees each call
-// in a hook and the logic is the same in a test.
+// poller, the two subcommands and what the pane's open marks seen. Every call
+// on `$` goes through an AlertsIo built in the hook (or the caller) that owns
+// that `$`, so validate sees each call in a hook and the logic is the same in
+// a test.
 //
 // Timers: `$.clock.after` timers die with the module's environment, which a
 // hot reload replaces ("a hot reload of the plugin cancels its pending waits
@@ -27,22 +30,20 @@ import { ACCOUNT_KEY, parseAccount } from './lib/account'
 import {
   ALERTS_ON_KEY,
   SEEN_KEY,
-  alertLead,
   alertLine,
   commitListUrls,
-  dismissAlerts,
   intervalSecondsOf,
   isAlertsOn,
   parseSeen,
   readListResponse,
   reconcile,
+  seeAlerts,
   statusText,
   storedSeen,
 } from './lib/alerts'
 import type { ListResult } from './lib/alerts'
 import { pollDelayMs } from './lib/backoff'
 import { FAILED_TEXT, isTypedByPerson, notTypedText, splitSubcommand } from './lib/command'
-import { commitLink } from './lib/links'
 import { closePane } from './pane-core'
 import { storeRecent } from './recent'
 
@@ -61,15 +62,12 @@ export const OFF_NOT_SAVED_TEXT = 'Reply alerts are off for this session, but sa
 
 export const EXTRA_WORDS_TEXT = '/devnull on and /devnull off take nothing after them.'
 
-export const DISMISS_FAILED_TEXT = 'Could not save that you have seen these replies. Press d to try again.'
+export const SEEN_NOT_SAVED_TEXT = 'Could not save that you have seen the new replies: they count as new again until you open the /dev/null pane.'
 
 export const PANE_NOT_CLOSED_TEXT = 'The /dev/null pane could not be closed: /devnull closes it.'
 
 /** The interval setting in `plugin.json`'s `userConfig`. */
 export const INTERVAL_OPTION = 'replyCheckSeconds'
-
-/** At most this many commits get a row in the band; the status line has the total. */
-export const BAND_ROWS_MAX = 5
 
 const NO_ALERTS: ReplyAlerts = { alerts: [], failures: 0, nextPollAtMs: null }
 
@@ -124,15 +122,15 @@ let poller: Poller | undefined
 // The poll whose requests are out, if any: never more than one, even across
 // a stop and a start (a request that gets no answer takes 30 s to reject).
 let inFlight: Promise<void> | undefined
-// The seen counts are read, changed and written by the poller and by a
-// dismiss; one at a time, so neither writes over the other.
+// The seen counts are read, changed and written by the poller and by the
+// pane's open; one at a time, so neither writes over the other.
 let storeTurn: Promise<void> = Promise.resolve()
 // The session's own io, for `/devnull on` to start the poller with.
 let sessionIo: AlertsIo | undefined
 let sessionIntervalSeconds = intervalSecondsOf(undefined)
 
 /**
- * The poller's start and stop, `/devnull on` and `/devnull off`, and the band.
+ * The poller's start and stop, and `/devnull on` and `/devnull off`.
  * `options` are the plugin's `userConfig` values, for the interval.
  */
 export function registerAlerts(on: On, options: PluginOptions): void {
@@ -174,44 +172,6 @@ export function registerAlerts(on: On, options: PluginOptions): void {
 
     return { text }
   }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
-
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey) return next(e)
-    const { alerts } = await read($, ALERTS)
-    if (alerts.length === 0) return next(e)
-
-    const { Box, Button, Link, Text } = $.ui.resolve(e)
-    const io = alertsIo($)
-    const shown = alerts.slice(0, BAND_ROWS_MAX)
-    const hidden = alerts.length - shown.length
-    const dismissButton = <Button key="dismiss" label="dismiss" hotkey="d" onPress={() => dismiss(io)} />
-
-    const rows = shown.map((alert, index) => {
-      const url = commitLink(alert.username, alert.id, e.surface)
-      const isLast = index === shown.length - 1 && hidden === 0
-
-      return (
-        <Box key={alert.id} flexDirection="row" columnGap={1}>
-          <Text>
-            {`${alertLead(alert)} `}
-            <Text color="warning">{alert.shortHash}</Text>
-          </Text>
-          {url === undefined ? [] : [<Link key="open" href={url} label={'open \u2197'} />]}
-          {isLast ? [dismissButton] : []}
-        </Box>
-      )
-    })
-    if (hidden > 0) {
-      rows.push(
-        <Box key="more" flexDirection="row" columnGap={1}>
-          <Text color="subtle">{`and ${hidden} more`}</Text>
-          {dismissButton}
-        </Box>,
-      )
-    }
-
-    return <Box flexDirection="column">{rows}</Box>
-  })
 }
 
 /** Starts the poller (replacing any), its first poll when the last one asked for it, or at once. */
@@ -411,15 +371,25 @@ async function turnOff(io: AlertsIo): Promise<string> {
   return isSaved ? OFF_TEXT : OFF_NOT_SAVED_TEXT
 }
 
-/** Takes the alerts off the band and the status line. */
+/** Takes the alerts off show: the status line clears. */
 async function clearShown(io: AlertsIo): Promise<void> {
   const state = await io.readState()
   if (state.alerts.length > 0) await io.updateState(current => ({ ...current, alerts: [] }))
   io.status(undefined)
 }
 
-/** The band's `d`: every alert on show is seen, at its count now. */
-async function dismiss(io: AlertsIo): Promise<void> {
+/**
+ * Opening the pane: every alert on show now counts as seen. Its count goes
+ * into the seen record in `$.store` and the alerts leave `$.state`, which
+ * clears the status line; replies that come later alert as usual. Resolves
+ * to the alerts it took off show, for the pane to keep marking until it
+ * closes. Never rejects: when the record cannot be saved a toast says so and
+ * the alerts stay on show (the pane marks them from there), so it resolves to
+ * none.
+ */
+export async function seeReplyAlerts($: EngineInterface): Promise<ReplyAlert[]> {
+  const io = alertsIo($)
+  let seen: ReplyAlert[] = []
   try {
     await inStoreTurn(async () => {
       const { alerts } = await io.readState()
@@ -429,18 +399,21 @@ async function dismiss(io: AlertsIo): Promise<void> {
       // Alerts for another account than the one kept are dropped, not saved:
       // the next poll starts that account's record afresh.
       if (account !== undefined && kept !== undefined && kept.username === account.username) {
-        await io.writeStore(SEEN_KEY, storedSeen(dismissAlerts(kept, alerts)))
+        await io.writeStore(SEEN_KEY, storedSeen(seeAlerts(kept, alerts)))
       }
-      const dismissed = new Set(alerts.map(alert => alert.id))
+      const ids = new Set(alerts.map(alert => alert.id))
       const state = await io.updateState(current => ({
         ...current,
-        alerts: current.alerts.filter(alert => !dismissed.has(alert.id)),
+        alerts: current.alerts.filter(alert => !ids.has(alert.id)),
       }))
+      seen = alerts
       io.status(statusText(state.alerts))
     })
   } catch {
-    io.toast(DISMISS_FAILED_TEXT)
+    io.toast(SEEN_NOT_SAVED_TEXT)
   }
+
+  return seen
 }
 
 /** Runs `work` after every earlier store turn has ended, whether it failed or not. */
