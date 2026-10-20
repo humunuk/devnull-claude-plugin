@@ -111,7 +111,7 @@ Checked with a throwaway probe mod run headless (`claude -p --plugin-dir <probe>
 
 ## Open checks
 
-- `PromptOrigin` stamps `composer` on "a click on a transcript link" as well as on Enter at the prompt. What draws such a link, and can text the model writes produce one that submits a `/devnull` command? The types do not say. Answer this before the posting unit ships; if a model-written link can submit `/devnull commit`, posting needs a confirmation step the link cannot give.
+- `PromptOrigin` stamps `composer` on "a click on a transcript link" as well as on Enter at the prompt. That phrase is the only mention; nothing in the types says text the model writes can produce such a link, so this is not a known issue and blocks nothing. The posting unit checks it once (the model writes links as Markdown, as bare URLs and as `/devnull ...` text; does clicking any of them submit a prompt?), and the design changes only if one does.
 
 ## Working on it
 
