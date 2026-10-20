@@ -6,6 +6,7 @@
 import type { Register } from 'claude-code'
 
 import { registerUsage } from './commands'
+import { registerPane } from './pane'
 import { registerPosting } from './posting'
 import { registerSetup } from './setup'
 
@@ -23,5 +24,6 @@ export const register: Register = on => {
 
   registerSetup(on)
   registerPosting(on)
+  registerPane(on)
   registerUsage(on)
 }

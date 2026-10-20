@@ -5,10 +5,11 @@
 
 import type { On } from 'claude-code'
 
+import { PANE_USAGE } from './pane'
 import { POSTING_USAGE } from './posting'
 import { SETUP_USAGE } from './setup'
 
-const USAGE: readonly string[] = [...SETUP_USAGE, ...POSTING_USAGE]
+const USAGE: readonly string[] = [...SETUP_USAGE, ...POSTING_USAGE, ...PANE_USAGE]
 
 export function usageText(): string {
   return ['Usage:', ...USAGE.map(line => `  ${line}`)].join('\n')

@@ -40,6 +40,30 @@ declare module 'claude-code' {
     devnull: {
       /** null until the first list arrives. */
       recent: RecentCommits | null
+      /**
+       * Where the pane's load of the person's commits stands (hooks/pane.tsx).
+       * The commits themselves are in `recent`; `page` is the ids of the last
+       * page fetched, newest first, which are the ones the pane draws (kept
+       * through a reload and a failure). `token` names the one load in flight;
+       * `retryAtMs` holds the next load back after a 429 with Retry-After.
+       * No text from dev-null.sh is kept here, only a status number.
+       */
+      pane:
+        | { kind: 'idle' }
+        | { kind: 'not-set-up' }
+        | { kind: 'loading'; username: string; token: string; startedAtMs: number; page: string[] }
+        | { kind: 'ready'; username: string; page: string[] }
+        | {
+            kind: 'failed'
+            username: string | null
+            page: string[]
+            problem:
+              | { kind: 'status'; status: number; retryAfterSeconds: number | null }
+              | { kind: 'network' }
+              | { kind: 'unreadable' }
+              | { kind: 'local' }
+            retryAtMs: number | null
+          }
     }
   }
 }

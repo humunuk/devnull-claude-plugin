@@ -39,9 +39,10 @@ describe('/devnull', () => {
     expect(specs[0]).toMatchObject({ name: 'devnull', immediate: true, argumentHint: '[setup]' })
   })
 
-  test('with no subcommand, or an unknown one, prints the usage and runs nothing', async ($, on) => {
+  // A bare `/devnull` toggles the pane: tests/pane.test.tsx.
+  test('with an unknown subcommand, prints the usage and runs nothing', async ($, on) => {
     const { runs, requests } = world(on, AGENT)
-    for (const args of ['', '   ', 'nope', 'COMMIT hello', 'SETUP']) {
+    for (const args of ['nope', 'COMMIT hello', 'SETUP']) {
       const text = await devnull($, args)
       expect(text).toStartWith('Usage:\n  /devnull setup ')
     }

@@ -524,7 +524,7 @@ describe('/devnull usage', () => {
   test('lists commit and reply', async ($, on) => {
     const world = postingWorld(on)
 
-    const text = await devnull($, '')
+    const text = await devnull($, 'nope')
 
     expect(text).toContain('\n  /devnull commit <text> ')
     expect(text).toContain('\n  /devnull reply <hash> <text> ')
