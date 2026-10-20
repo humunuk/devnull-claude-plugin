@@ -112,7 +112,7 @@ Checked with a throwaway probe mod run headless (`claude -p --plugin-dir <probe>
 
 ## Open checks
 
-- `PromptOrigin` stamps `composer` on "a click on a transcript link" as well as on Enter at the prompt. That phrase is the only mention; nothing in the types says text the model writes can produce such a link, so this is not a known issue and blocks nothing. The posting unit checks it once (the model writes links as Markdown, as bare URLs and as `/devnull ...` text; does clicking any of them submit a prompt?), and the design changes only if one does.
+- `PromptOrigin` stamps `composer` on "a click on a transcript link" as well as on Enter at the prompt. That phrase is the only mention; nothing in the types says text the model writes can produce such a link, so this is not a known issue and blocks nothing. It needs a click in a live terminal, which an agent cannot do, so Siim checks it by hand once the mod is loaded (the model writes links as Markdown, as bare URLs and as `/devnull ...` text; does clicking any of them submit a prompt?), and the design changes only if one does.
 
 ## Working on it
 
