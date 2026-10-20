@@ -38,13 +38,19 @@ The repository root is the mod and its own marketplace:
    - Look, in a `git log` style: a header `/dev/null · @<username>` with `r refresh · updated <age>` on the right; per commit, one line with the short hash in the `warning` theme colour, then the age, `★ <stars>` and `↳ <replies>` in `subtle`, `+N new` in `success` bold and `pending review` in `inactive`; under it up to 3 cleaned body lines, `…` when cut, and an `open ↗` link; at the bottom a rule and the input (`commit ›`, Enter posts). Theme keys only, so light and dark themes both work; no borders inside the engine's frame. Non-ASCII characters are `\u` escapes in the source.
    - States, all fixed texts: not set up (`Run /devnull setup to choose your key and username.`), loading, empty (`No commits yet. Type below, or /devnull commit <text>.`), and error (`Couldn't load commits (HTTP <status>). Press r to retry.`).
    - Keys while the pane has focus (`ctrl+x tab`): `r` refreshes, Tab moves to the input, the arrows scroll, `ctrl+x x` closes. Placement is the engine's: docked beside the transcript in fullscreen from 110 columns, else inline above the prompt.
-   - The Following, Latest and Trending tabs stay hidden until phase 2. The layout leaves room for a tab row (`1 Mine  2 Following  3 Latest  4 Trending`, switched with the number keys).
+   - A tab row under the header, `1 Mine  2 Following`, switched with the number keys while the pane has focus (Buttons with hotkeys). The Latest and Trending tabs stay hidden until phase 2 (`3 Latest  4 Trending` then join the row).
+   - The Following tab is built from the public API alone (Siim, 2026-10-20), and only when the person opens or refreshes it; it is never polled.
+     - `GET /api/v1/users/<username>/following` (first page, newest follow first), then `GET /api/v1/users/<followed>/commits` for at most the first 20 followed users, one request at a time. The commits are merged newest first, at most 30 drawn, each with its author's `@username` on its line and a link from `commitLink(author, id)`.
+     - A commit counts only when its author is the user whose list it came from. A user list that fails is left out and counted (`2 of 20 people could not be loaded`). A 429 stops the round where it is, honours `Retry-After`, and draws what arrived with a fixed note.
+     - At most one round a minute: `r` sooner than that gets a fixed `wait <n>s` text. Rounds go in `$.state`, so switching tabs or reopening within the minute draws the last round without fetching.
+     - The Following commits' hashes join `/devnull reply`'s completion, kept apart from the person's own recent list.
+     - States, as fixed texts: following nobody (`You follow nobody on /dev/null yet.`), and none of them has posted.
 4. Reply alerts: poll the person's newest commits and replies (`?replies=1`) every 60 s by default, never more often than every 30 s. When a `replies_count` rises, show "N new replies on <hash>" with a link in the band above the prompt, a count in the status line and a toast. Seen counts are kept in `$.store`, so a restart does not alert again. Reply text needs sign-in (phase 2), so phase 1 shows counts only.
 5. `/devnull off` and `/devnull on`: stop and resume polling and alerts; `off` also closes the pane and stops its redraw timer, `on` does not open it. Kept in `$.store`.
 
 ### Phase 2: blocked upstream
 
-Sign-in as a device, reply text, mentions, the unread count from `GET /api/v1/me`, and the Latest, Trending and Following logs. Phase 2 starts only once nunomaduro/dev-null.sh PR #585 (device authorization grant, RFC 8628) is merged and documented in that repository's README. Build no part of it before then. Never use the `/mobile/authorize` flow with a `devnull://` redirect: that scheme belongs to the official mobile app.
+Sign-in as a device, reply text, mentions, the unread count from `GET /api/v1/me`, and the Latest and Trending logs (and the signed Following log, which then replaces the public-API Following tab). Phase 2 starts only once nunomaduro/dev-null.sh PR #585 (device authorization grant, RFC 8628) is merged and documented in that repository's README. Build no part of it before then. Never use the `/mobile/authorize` flow with a `devnull://` redirect: that scheme belongs to the official mobile app.
 
 ### Not in scope
 
@@ -65,10 +71,11 @@ The base URL is the constant `https://dev-null.sh`. No setting, environment vari
 | `GET /api/v1/users/{username}` | A public profile. | README, "Public API" |
 | `GET /api/v1/users/{username}/commits` | The user's top-level commits, newest first, 20 a page; `?replies=1` for their replies. Each has `id`, `short_hash`, `body`, `parent_id`, `created_at`, `stars_count`, `replies_count` and `author`. | README, "Public API" |
 | `GET /api/v1/commits/{id}` | One commit with its counts. | README, "Public API" |
+| `GET /api/v1/users/{username}/following` | The people the user follows, newest follow first, 30 per page. The Following tab reads the first page. | README, "Public API" |
 
 The public API allows 60 requests a minute per IP address, shared with everything else on that address. Honour 429 and `Retry-After`; back off on 5xx and network errors.
 
-Never call the website's own routes (`/log/*`, `/commits/{id}/replies`, `/search/*`, anything Inertia), even where they answer guests. They are the site's internals, and the maintainers declined a client built on them (PR #92).
+Never call the website's own routes (`/log/*`, `/commits/{id}/replies`, `/search/*`, anything Inertia), even where they answer guests. They are the site's internals, and the maintainers declined a client built on them (PR #92). It is also against dev-null.sh's terms: `resources/js/pages/terms/show.tsx` at 3e55ca6 forbids "use automated means we don't provide" and "Scrape or collect data from the service … other than through the public API within its limits", and the live `robots.txt` disallows `/log/` and `/commits/`.
 
 All of the above was read from nunomaduro/dev-null.sh at `production` commit `3e55ca6` (2026-10-20). When upstream changes, read the source again before changing the mod.
 
