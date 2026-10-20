@@ -1,0 +1,13 @@
+{
+  "name": "devnull-claude-plugin",
+  "private": true,
+  "description": "Development tooling for the devnull Claude Code mod. Nothing in node_modules ships with the mod.",
+  "scripts": {
+    "validate": "claude plugin validate .",
+    "typecheck": "tsc -p .",
+    "test": "claude plugin test ."
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}
