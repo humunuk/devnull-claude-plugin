@@ -1,0 +1,6 @@
+{
+  "name": "devnull-claude-plugin",
+  "owner": { "name": "Siim Kallari" },
+  "description": "The devnull mod: an unofficial dev-null.sh client for Claude Code.",
+  "plugins": [{ "name": "devnull", "source": "./" }]
+}

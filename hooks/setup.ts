@@ -1,0 +1,202 @@
+// `/devnull setup`: list the SSH agent's keys, or choose one of them and the
+// /dev/null username once dev-null.sh confirms it knows the key. The hook only
+// checks who asked and hands `runSetup` the three things it may do outside
+// the mod: run `ssh-add -L`, send the key lookup, and keep the choice.
+
+import type { HttpResponse, On, ProcessRunResult } from 'claude-code'
+
+import { ACCOUNT_KEY, USERNAME } from './lib/account'
+import type { Account } from './lib/account'
+import { SSH_ADD_LIST, SSH_ADD_TIMEOUT_MS, readAgentList } from './lib/agent'
+import type { AgentList } from './lib/agent'
+import { FAILED_TEXT, isTypedByPerson, notTypedText, splitSubcommand, splitWords } from './lib/command'
+import { findKey, parseKeyChoice } from './lib/keys'
+import type { AgentKey } from './lib/keys'
+import { KEY_LOOKUP_URL, keyLookupRequest, readLookup } from './lib/lookup'
+import type { LookupOutcome } from './lib/lookup'
+
+const LIST_USAGE = '/devnull setup                    list the keys in your SSH agent'
+const CHOOSE_USAGE = '/devnull setup <key> <username>   sign with that key (its number or SHA256: fingerprint) as that /dev/null user'
+
+export const SETUP_USAGE: readonly string[] = [LIST_USAGE, CHOOSE_USAGE]
+
+const CHOOSE_LINE = 'Choose one with /devnull setup <number or SHA256:fingerprint> <your /dev/null username>'
+
+export const SSH_ADD_FAILED_TEXT =
+  'Could not run ssh-add, or it did not answer within 5 seconds. /devnull needs OpenSSH (ssh-add on your PATH) and a running SSH agent.'
+
+export const AGENT_UNREACHABLE_TEXT = [
+  'No SSH agent answered. /devnull signs through your SSH agent and never reads a private key file.',
+  'Start an agent in the shell you run Claude Code from (eval "$(ssh-agent)"), add the Ed25519 or RSA key that is on your GitHub account with ssh-add <path to the key>, then run /devnull setup again.',
+].join('\n')
+
+export const NO_USABLE_KEY_TEXT = [
+  'Your SSH agent holds no Ed25519 key, or RSA key of 2048 bits or more. /devnull signs through your SSH agent and never reads a private key file.',
+  'Add the key that is on your GitHub account with ssh-add <path to the key> (ssh-add -L lists what the agent holds), then run /devnull setup again.',
+].join('\n')
+
+export const BAD_ARGS_TEXT = ['Usage:', ...SETUP_USAGE.map(line => `  ${line}`)].join('\n')
+
+export const BAD_CHOICE_TEXT =
+  'Choose the key by its number in the list /devnull setup prints, or by its fingerprint (SHA256: and 43 characters).'
+
+export const BAD_USERNAME_TEXT = 'A /dev/null username is 1 to 39 letters, digits or hyphens, as on GitHub.'
+
+export const KEY_NOT_IN_AGENT_TEXT =
+  'Your SSH agent does not hold that key now, so nothing was saved. Run /devnull setup to list the keys it holds.'
+
+export const LOOKUP_UNREACHABLE_TEXT =
+  'Could not reach dev-null.sh, so nothing was saved. Check your connection and run /devnull setup again.'
+
+export const MISMATCH_TEXT =
+  'dev-null.sh answered, but not with the key that was sent, so nothing was saved. Run /devnull setup again later.'
+
+export const NOT_FOUND_TEXT = [
+  'This key is not on the GitHub account of a /dev/null user, so nothing was saved.',
+  'Add it on GitHub (Settings, SSH and GPG keys), sign in on https://dev-null.sh again, then run /devnull setup again.',
+].join('\n')
+
+export const STORE_FAILED_TEXT = 'dev-null.sh knows this key, but saving your choice failed. Run /devnull setup again.'
+
+/** What setup may do outside the mod, each bound to one fixed call on `$`. */
+export type SetupIo = {
+  listAgentKeys: () => Promise<ProcessRunResult>
+  lookUpKey: (publicKey: string) => Promise<HttpResponse>
+  saveAccount: (account: Account) => Promise<void>
+}
+
+export function registerSetup(on: On): void {
+  on('command.run', { command: 'devnull' }, async ($, e, next) => {
+    const { name, rest } = splitSubcommand(e.args)
+    if (name !== 'setup') return next(e)
+    if (!isTypedByPerson(e.origin)) return { text: notTypedText('setup') }
+
+    const io: SetupIo = {
+      listAgentKeys: () => $.process.run(SSH_ADD_LIST, { timeoutMs: SSH_ADD_TIMEOUT_MS }),
+      lookUpKey: publicKey => $.http.fetch(KEY_LOOKUP_URL, keyLookupRequest(publicKey)),
+      saveAccount: account => $.store.set(ACCOUNT_KEY, account),
+    }
+
+    return { text: await runSetup(io, rest) }
+  }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
+}
+
+/** Setup's answer to what followed `/devnull setup`. */
+export async function runSetup(io: SetupIo, rest: string): Promise<string> {
+  const words = splitWords(rest)
+  if (words.length === 0) return listKeys(io)
+  const [choiceText, username] = words
+  if (words.length !== 2 || choiceText === undefined || username === undefined) return BAD_ARGS_TEXT
+
+  return chooseKey(io, choiceText, username)
+}
+
+async function listKeys(io: SetupIo): Promise<string> {
+  const agent = await readAgent(io)
+  if (agent.kind !== 'keys') return agentProblemText(agent)
+
+  return [
+    'Keys in your SSH agent:',
+    ...agent.keys.map((key, index) => `  ${index + 1}  ${describeKey(key)}`),
+    '',
+    CHOOSE_LINE,
+  ].join('\n')
+}
+
+async function chooseKey(io: SetupIo, choiceText: string, username: string): Promise<string> {
+  const choice = parseKeyChoice(choiceText)
+  if (choice === undefined) return BAD_CHOICE_TEXT
+  if (!USERNAME.test(username)) return BAD_USERNAME_TEXT
+
+  // The key must be in the agent now: it is the one that will sign.
+  const agent = await readAgent(io)
+  if (agent.kind !== 'keys') return agentProblemText(agent)
+  const key = findKey(agent.keys, choice)
+  if (key === undefined) return KEY_NOT_IN_AGENT_TEXT
+
+  let outcome: LookupOutcome
+  try {
+    outcome = readLookup(key.publicKey, await io.lookUpKey(key.publicKey))
+  } catch {
+    return LOOKUP_UNREACHABLE_TEXT
+  }
+
+  switch (outcome.kind) {
+    case 'found': {
+      try {
+        await io.saveAccount({ fingerprint: key.fingerprint, publicKey: key.publicKey, username })
+      } catch {
+        return STORE_FAILED_TEXT
+      }
+
+      return savedText(key, username)
+    }
+    case 'mismatch':
+      return MISMATCH_TEXT
+    case 'not-found':
+      return NOT_FOUND_TEXT
+    case 'rate-limited':
+      return rateLimitedText(outcome.retryAfterSeconds)
+    case 'failed':
+      return failedText(outcome.status)
+    default: {
+      const unknownOutcome: never = outcome
+
+      return unknownOutcome
+    }
+  }
+}
+
+async function readAgent(io: SetupIo): Promise<AgentList> {
+  let result: ProcessRunResult
+  try {
+    result = await io.listAgentKeys()
+  } catch {
+    // ssh-add could not start, or outlived its timeout.
+    return { kind: 'failed' }
+  }
+
+  return readAgentList(result.exitCode, result.stdout)
+}
+
+function agentProblemText(agent: Exclude<AgentList, { kind: 'keys' }>): string {
+  switch (agent.kind) {
+    case 'no-usable-key':
+      return NO_USABLE_KEY_TEXT
+    case 'unreachable':
+      return AGENT_UNREACHABLE_TEXT
+    case 'failed':
+      return SSH_ADD_FAILED_TEXT
+    default: {
+      const unknownAgent: never = agent
+
+      return unknownAgent
+    }
+  }
+}
+
+function describeKey(key: AgentKey): string {
+  const parts = [key.fingerprint, key.type.padEnd(11)]
+  if (key.comment !== '') parts.push(key.comment)
+
+  return parts.join('  ').trimEnd()
+}
+
+export function savedText(key: AgentKey, username: string): string {
+  return [
+    `Saved. /devnull will sign with ${describeKey(key)}`,
+    `and post as ${username}. dev-null.sh knows this key; the username is compared with the one on your first post.`,
+  ].join('\n')
+}
+
+export function rateLimitedText(retryAfterSeconds: number | undefined): string {
+  const when = retryAfterSeconds === undefined ? 'in a minute' : `in ${retryAfterSeconds} seconds`
+
+  return `dev-null.sh is limiting requests right now, so nothing was saved. Run /devnull setup again ${when}.`
+}
+
+export function failedText(status: number | undefined): string {
+  const answer = status === undefined ? 'an unexpected answer' : `status ${status}`
+
+  return `dev-null.sh answered with ${answer}, so nothing was saved. Run /devnull setup again later.`
+}
