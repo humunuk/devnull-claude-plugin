@@ -9,6 +9,8 @@
 
 import type { HttpInit } from 'claude-code'
 
+import { retryAfterSeconds } from './backoff'
+
 export const KEY_LOOKUP_URL = 'https://dev-null.sh/api/cli/key-lookups'
 
 export function keyLookupRequest(publicKey: string): HttpInit {
@@ -41,15 +43,7 @@ export function readLookup(sent: string, response: LookupResponse): LookupOutcom
     return firstLine === sent ? { kind: 'found' } : { kind: 'mismatch' }
   }
   if (status === 404) return { kind: 'not-found' }
-  if (status === 429) return { kind: 'rate-limited', retryAfterSeconds: retryAfter(response.headers) }
+  if (status === 429) return { kind: 'rate-limited', retryAfterSeconds: retryAfterSeconds(response.headers['retry-after']) }
 
   return { kind: 'failed', status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined }
-}
-
-/** `Retry-After` in seconds, only when it is a plain whole number. */
-function retryAfter(headers: Readonly<Record<string, string>>): number | undefined {
-  const value = headers['retry-after']
-  if (value === undefined || !/^[0-9]{1,6}$/.test(value)) return undefined
-
-  return Number(value)
 }
