@@ -41,10 +41,9 @@ describe('/devnull', () => {
 
   test('with no subcommand, or an unknown one, prints the usage and runs nothing', async ($, on) => {
     const { runs, requests } = world(on, AGENT)
-    for (const args of ['', '   ', 'nope', 'commit hello', 'SETUP']) {
+    for (const args of ['', '   ', 'nope', 'COMMIT hello', 'SETUP']) {
       const text = await devnull($, args)
       expect(text).toStartWith('Usage:\n  /devnull setup ')
-      expect(text).not.toContain('commit')
     }
     expect(runs).toHaveLength(0)
     expect(requests).toHaveLength(0)
