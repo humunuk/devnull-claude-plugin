@@ -81,13 +81,16 @@ export function readCommitsAnswer(response: CommitsResponse): CommitsAnswer {
 
 /**
  * The load after one is asked for: a new load named `token`, or the current
- * one unchanged while a load is in flight, or while dev-null.sh asked to wait.
+ * one unchanged while a load is in flight, or while dev-null.sh asked to wait:
+ * after this load's own 429, or until `notBeforeMs`, when a 429 on any of the
+ * pane's requests (a Following round's too) asked it to.
  */
-export function startLoad(current: PaneLoad, username: string, token: string, nowMs: number): PaneLoad {
+export function startLoad(current: PaneLoad, username: string, token: string, nowMs: number, notBeforeMs = 0): PaneLoad {
   if (current.kind === 'loading' && nowMs >= current.startedAtMs && nowMs - current.startedAtMs < LOAD_STALE_MS) {
     return current
   }
   if (current.kind === 'failed' && current.retryAtMs !== null && nowMs < current.retryAtMs) return current
+  if (nowMs < notBeforeMs) return current
 
   return {
     kind: 'loading',
@@ -263,20 +266,26 @@ export function paneCommits(
     })
     .filter(commit => commit.parentId === null && commit.username === recent.username)
     .slice(0, PAGE_SIZE)
-    .map(commit => {
-      const age = relativeAge(commit.createdAtMs, nowMs)
-      const counts = `\u2605 ${commit.starsCount} \u00b7 \u21b3 ${commit.repliesCount}`
-      const { lines } = cleanBody(commit.body, { maxLines: BODY_LINES, maxCodePoints: BODY_DRAWN_MAX })
+    .map(commit => ({ ...drawnCommit(commit, nowMs, surface), newReplies: newById.get(commit.id) ?? 0 }))
+}
 
-      return {
-        id: commit.id,
-        hash: commit.shortHash,
-        meta: age === '' ? counts : `${age} \u00b7 ${counts}`,
-        newReplies: newById.get(commit.id) ?? 0,
-        lines,
-        href: commitLink(commit.username, commit.id, surface),
-      }
-    })
+/**
+ * One commit as either tab draws it, without marks: its hash, its age and
+ * counts, its cleaned body lines and its link on `surface`, built from its
+ * author's username and its id.
+ */
+export function drawnCommit(commit: CommitSummary, nowMs: number, surface: RenderSurface): Omit<PaneCommit, 'newReplies'> {
+  const age = relativeAge(commit.createdAtMs, nowMs)
+  const counts = `\u2605 ${commit.starsCount} \u00b7 \u21b3 ${commit.repliesCount}`
+  const { lines } = cleanBody(commit.body, { maxLines: BODY_LINES, maxCodePoints: BODY_DRAWN_MAX })
+
+  return {
+    id: commit.id,
+    hash: commit.shortHash,
+    meta: age === '' ? counts : `${age} \u00b7 ${counts}`,
+    lines,
+    href: commitLink(commit.username, commit.id, surface),
+  }
 }
 
 /** `+3 new`, after a commit's counts. */

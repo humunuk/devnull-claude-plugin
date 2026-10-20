@@ -4,7 +4,8 @@
 // pane's input, an SSH agent, mktemp, ssh-keygen, rm and rmdir that answer as
 // they do when signing works, and dev-null.sh answering the post. Each request
 // and command is recorded, and a list request or a post can be held
-// unanswered until the test lets it go.
+// unanswered until the test lets it go. A list request sent while another is
+// held is counted as an overlap: the pane sends one at a time.
 
 import type { CommandRunResult, HttpInit, HttpResponse, On, ProcessRunInit, PromptOrigin } from 'claude-code'
 import { mock } from 'claude-code/testing'
@@ -49,6 +50,10 @@ export type PaneWorld = {
   panesAsked: () => number
   /** Sets what every request from now on gets. */
   answer: (answer: Answer) => void
+  /** Sets what every request for `url` from now on gets, over `answer`. */
+  answerFor: (url: string, answer: Answer) => void
+  /** How many list requests were sent while another was held. */
+  overlaps: () => number
   /** Answers the held request with `answer`. */
   release: (answer: Exclude<Answer, 'held'>) => void
   /** Sets what every post from now on gets. */
@@ -72,7 +77,9 @@ export function paneWorld(
   const toasts: string[] = []
   const open = new Set<string>()
   let current: Answer = options.answer ?? 'unreachable'
+  const byUrl = new Map<string, Answer>()
   let held: ((answer: Exclude<Answer, 'held'>) => void) | undefined
+  let overlaps = 0
   let currentPost: Answer = options.post ?? 'unreachable'
   let heldPost: ((answer: Exclude<Answer, 'held'>) => void) | undefined
 
@@ -124,7 +131,9 @@ export function paneWorld(
       })
     }
     requests.push({ url: e.url, init: e.init })
-    if (current !== 'held') return respond(current)
+    if (held !== undefined) overlaps += 1
+    const answer = byUrl.get(e.url) ?? current
+    if (answer !== 'held') return respond(answer)
 
     return new Promise(resolve => {
       held = answer => resolve(respond(answer))
@@ -156,6 +165,10 @@ export function paneWorld(
     answer: answer => {
       current = answer
     },
+    answerFor: (url, answer) => {
+      byUrl.set(url, answer)
+    },
+    overlaps: () => overlaps,
     release: answer => {
       if (held === undefined) throw new Error('no request is held')
       const answerHeld = held

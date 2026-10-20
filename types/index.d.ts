@@ -59,6 +59,50 @@ export type ReplyAlerts = {
   nextPollAtMs: number | null
 }
 
+/**
+ * One Following round as it ended (hooks/lib/following.ts): the follow list
+ * of `username`, then the commit lists of the first people on it. Commits in
+ * it are each by the person whose list they came from; text in them is raw
+ * and cleaned when drawn. No other text from dev-null.sh is kept, only a
+ * status number.
+ */
+export type FollowingRound = {
+  /** Whose follow list it read; null when it failed before the account was read. */
+  username: string | null
+  startedAtMs: number
+  /** When it ended: the tab's "updated" age. */
+  endedAtMs: number
+  /**
+   * No round starts before this: a minute after this one started, longer
+   * after rounds a 5xx or a network failure stopped, or later when a 429
+   * asked to wait longer.
+   */
+  nextAtMs: number
+  /** Rounds in a row, this one included, that a 5xx or a network failure stopped; 0 for a round that was not. */
+  failures: number
+  outcome:
+    | {
+        kind: 'list'
+        /** How many people the round set out to load: the first 20 followed, or fewer. */
+        people: number
+        /** How many of their lists failed and were left out. */
+        failed: number
+        /** Whether a 429 stopped the round before every list was asked for. */
+        isCut: boolean
+        /** Newest first, at most 30. */
+        commits: CommitSummary[]
+      }
+    | {
+        kind: 'failed'
+        /** The follow list itself could not be read. */
+        problem:
+          | { kind: 'status'; status: number; retryAfterSeconds: number | null }
+          | { kind: 'network' }
+          | { kind: 'unreadable' }
+          | { kind: 'local' }
+      }
+}
+
 // Written out in place, not as a named type: `claude plugin validate` reads
 // the keys from this declaration itself.
 declare module 'claude-code' {
@@ -112,6 +156,35 @@ declare module 'claude-code' {
       }
       /** The reply alerts; see hooks/alerts.tsx. */
       replyAlerts: ReplyAlerts
+      /** The pane's tab (hooks/pane.tsx), kept so a reopen shows the last one. */
+      paneTab: 'mine' | 'following'
+      /**
+       * Where the Following tab's round stands (hooks/pane-core.ts). `token`
+       * names the one round in flight, and `steppedAtMs` is when it last
+       * moved on, so a round a reload lost is let go. `last` is the round
+       * before, drawn meanwhile and holding the next one back for a minute.
+       * `waitUntilMs` is when the next round is due, set when an r came too
+       * soon, to say how long to wait.
+       */
+      following:
+        | { kind: 'idle' }
+        | { kind: 'not-set-up' }
+        | {
+            kind: 'loading'
+            username: string
+            token: string
+            startedAtMs: number
+            steppedAtMs: number
+            last: FollowingRound | null
+          }
+        | { kind: 'ended'; last: FollowingRound; waitUntilMs: number | null }
+      /**
+       * No request of the pane goes out before this, in `$.clock.now()`
+       * milliseconds: set by a 429 with Retry-After on any of them, the load's
+       * or a round's, since both share the lane and the per-IP limit
+       * (hooks/pane-core.ts). 0 when nothing asked to wait.
+       */
+      paneNotBeforeMs: number
     }
   }
 }

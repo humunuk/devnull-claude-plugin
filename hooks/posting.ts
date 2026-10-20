@@ -16,7 +16,7 @@ import type {
   PromptAutocompleteSuggestion,
 } from 'claude-code'
 
-import type { RecentCommits } from '../types'
+import type { CommitSummary, RecentCommits } from '../types'
 
 import { ACCOUNT_KEY, parseAccount } from './lib/account'
 import type { Account } from './lib/account'
@@ -43,9 +43,9 @@ import {
   signingKeyPath,
 } from './lib/posting'
 import type { PostOutcome, PostResult } from './lib/posting'
-import { matchHashes } from './lib/recent'
+import { MATCH_MAX, matchFollowingHashes, matchHashes } from './lib/recent'
 import { readSignature } from './lib/signature'
-import { reloadPaneIfOpen } from './pane-core'
+import { readFollowingCommits, reloadPaneIfOpen } from './pane-core'
 import { readRecent } from './recent'
 import { SSH_ADD_FAILED_TEXT } from './setup'
 
@@ -152,7 +152,11 @@ export function registerPosting(on: On): void {
   // come first, then these.
   on('prompt.autocomplete', async ($, e, next) => {
     const below = await next(e)
-    const io: CompletionIo = { readRecent: () => readRecent($), nowMs: () => $.clock.now() }
+    const io: CompletionIo = {
+      readRecent: () => readRecent($),
+      readFollowing: () => readFollowingCommits($),
+      nowMs: () => $.clock.now(),
+    }
     const mine = await completionRows(io, e)
 
     return mine.length === 0 ? below : { suggestions: [...below.suggestions, ...mine] }
@@ -166,10 +170,12 @@ export function registerPosting(on: On): void {
 
 /**
  * What completion may read: the recent list the pane and the alerts keep in
- * `$.state`, and the clock for the ages. Nothing else, and no network.
+ * `$.state`, the commits of the pane's last Following round, kept apart from
+ * it, and the clock for the ages. Nothing else, and no network.
  */
 export type CompletionIo = {
   readRecent: () => Promise<RecentCommits | null>
+  readFollowing: () => Promise<readonly CommitSummary[]>
   nowMs: () => Promise<number>
 }
 
@@ -184,8 +190,14 @@ export async function completionRows(
       return []
     case 'subcommand':
       return matchSubcommands(e.token)
-    case 'reply-hash':
-      return matchHashes(await io.readRecent(), e.token, await io.nowMs())
+    case 'reply-hash': {
+      // The person's own commits first, then those of the people they follow.
+      const recent = await io.readRecent()
+      const following = await io.readFollowing()
+      const nowMs = await io.nowMs()
+
+      return [...matchHashes(recent, e.token, nowMs), ...matchFollowingHashes(following, e.token, nowMs)].slice(0, MATCH_MAX)
+    }
     default: {
       const unknownPlace: never = place
 

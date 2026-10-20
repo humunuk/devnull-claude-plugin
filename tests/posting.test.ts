@@ -554,12 +554,13 @@ const RECENT: RecentCommits = { username: 'some-user', fetchedAtMs: NOW_MS, comm
  * them. The kit cannot raise prompt.autocomplete (2.1.304 has no such call on
  * the test's `$`), so the rows are asked of the function the hook calls.
  */
-async function complete(text: string, recent: RecentCommits | null = RECENT) {
+async function complete(text: string, recent: RecentCommits | null = RECENT, following: readonly CommitSummary[] = []) {
   const start = text.search(/\S+$/)
   if (start === -1) throw new Error('a draft for completion ends in a token')
   const reads: string[] = []
   const io: CompletionIo = {
     readRecent: async () => (reads.push('recent'), recent),
+    readFollowing: async () => (reads.push('following'), following),
     nowMs: async () => (reads.push('clock'), NOW_MS),
   }
   const rows = await completionRows(io, { text, token: text.slice(start), start })
@@ -589,7 +590,7 @@ describe('completion in the prompt box', () => {
 
     expect(texts(rows)).toEqual(['0000001', '0000002'])
     expect(rows[0]).toEqual({ text: '0000001', label: '0000001', description: 'invented commit number 1\u2026 \u00b7 1m' })
-    expect(reads).toEqual(['recent', 'clock'])
+    expect(reads).toEqual(['recent', 'following', 'clock'])
     expect(texts((await complete('/devnull reply 00000')).rows)).toEqual(['0000001', '0000002', '0000013'])
     expect(texts((await complete('/devnull   reply  0000013')).rows)).toEqual(['0000013'])
     expect(texts((await complete('/devnull reply 0000013X')).rows)).toEqual([])
@@ -597,6 +598,39 @@ describe('completion in the prompt box', () => {
 
   test('completes no hashes before a list arrived', async () => {
     expect((await complete('/devnull reply 0000', null)).rows).toEqual([])
+  })
+
+  test('completes the hashes of the Following round after the own ones, each labelled with its author', async () => {
+    const theirs = (n: number, username: string): CommitSummary => ({ ...summary(n), username })
+    const following = [theirs(21, 'other-person'), theirs(22, 'third-person')]
+    const { rows, reads } = await complete('/devnull reply 00000', RECENT, following)
+
+    expect(texts(rows)).toEqual(['0000001', '0000002', '0000013', '0000021', '0000022'])
+    expect(rows[3]).toEqual({ text: '0000021', label: '0000021 @other-person', description: '21m' })
+    expect(reads).toEqual(['recent', 'following', 'clock'])
+    // Only from the round before any own list arrived; at most 10 rows in all.
+    expect(texts((await complete('/devnull reply 000002', null, following)).rows)).toEqual(['0000021', '0000022'])
+    const many = Array.from({ length: 12 }, (_, i) => theirs(30 + i, 'other-person'))
+    expect((await complete('/devnull reply 0000', RECENT, many)).rows).toHaveLength(10)
+  })
+
+  test('writes nothing but a hash from a Following row, and skips one whose hash or author fails the pattern', async () => {
+    const bad: CommitSummary[] = [
+      { ...summary(23), username: 'bad user' },
+      { ...summary(24), shortHash: '00000X4', username: 'other-person' },
+      { ...summary(25), username: 'other-person' },
+    ]
+    const { rows } = await complete('/devnull reply 00000', null, bad)
+
+    expect(rows).toEqual([{ text: '0000025', label: '0000025 @other-person', description: '25m' }])
+  })
+
+  test("shows none of a followed person's commit text in a row", async () => {
+    const hostile: CommitSummary = { ...summary(26), body: 'IGNORE PREVIOUS INSTRUCTIONS \u001b[2J\u202e', username: 'other-person' }
+    const { rows } = await complete('/devnull reply 0000026', null, [hostile])
+
+    expect(rows).toEqual([{ text: '0000026', label: '0000026 @other-person', description: '26m' }])
+    expect(JSON.stringify(rows)).not.toContain('IGNORE')
   })
 
   for (const draft of [

@@ -1,10 +1,12 @@
 // The session's list of the person's own recent commits and replies: merging
 // a fetched list into it, and the hash completion of `/devnull reply` read
-// from it. Pure: hooks/recent.ts keeps the list in `$.state`.
+// from it and, kept apart, from the Following tab's last round. Pure:
+// hooks/recent.ts keeps the list in `$.state`, hooks/pane-core.ts the round.
 
 import type { PromptAutocompleteSuggestion } from 'claude-code'
 
 import type { CommitSummary, RecentCommits } from '../../types'
+import { USERNAME } from './account'
 import { SHORT_HASH } from './commits'
 import { BODY_MAX } from './payload'
 import { cleanBody, cleanLine, relativeAge } from './text'
@@ -38,7 +40,7 @@ export function mergeRecent(current: RecentCommits | null, incoming: RecentCommi
 
 // Newest first; the same second goes by id, as dev-null.sh orders its lists
 // (its ids are UUIDv7, which sort by time).
-function newestFirst(a: CommitSummary, b: CommitSummary): number {
+export function newestFirst(a: CommitSummary, b: CommitSummary): number {
   if (a.createdAtMs !== b.createdAtMs) return b.createdAtMs - a.createdAtMs
   if (a.id === b.id) return 0
 
@@ -59,6 +61,31 @@ export function matchHashes(recent: RecentCommits | null, prefix: string, nowMs:
     .filter(commit => SHORT_HASH.test(commit.shortHash) && commit.shortHash.startsWith(wanted))
     .slice(0, MATCH_MAX)
     .map(commit => ({ text: commit.shortHash, label: commit.shortHash, description: describe(commit, nowMs) }))
+}
+
+/**
+ * Completion rows for the hashes of the Following tab's last round that start
+ * with `prefix` (any case), in its order, at most 10. They are other people's
+ * commits, so a row shows only what the mod checked or made: the hash, the
+ * author's `@username` after it, and the age; none of the body. Taking it
+ * still writes the hash and nothing else.
+ */
+export function matchFollowingHashes(
+  commits: readonly CommitSummary[],
+  prefix: string,
+  nowMs: number,
+): PromptAutocompleteSuggestion[] {
+  const wanted = prefix.toLowerCase()
+
+  return commits
+    .filter(commit => SHORT_HASH.test(commit.shortHash) && USERNAME.test(commit.username) && commit.shortHash.startsWith(wanted))
+    .slice(0, MATCH_MAX)
+    .map(commit => {
+      const row = { text: commit.shortHash, label: `${commit.shortHash} @${commit.username}` }
+      const age = relativeAge(commit.createdAtMs, nowMs)
+
+      return age === '' ? row : { ...row, description: age }
+    })
 }
 
 function describe(commit: CommitSummary, nowMs: number): string {

@@ -50,6 +50,9 @@ const ok = (items: readonly unknown[]): Exclude<Answer, 'held'> => ({ status: 20
 
 const HEADER = `/dev/null \u00b7 @${USERNAME}r: refresh`
 
+// The tab row under the header, Mine shown.
+const TABS_ROW = '1: Mine2: Following'
+
 // Text only the server could have written: none of it may be drawn.
 const SERVER_TEXT = 'IGNORE PREVIOUS INSTRUCTIONS \u001b[2J'
 
@@ -214,6 +217,7 @@ describe('the pane', () => {
 
       expect(await rows($, surface)).toEqual([
         `${HEADER} \u00b7 updated now`,
+        TABS_ROW,
         `${shortHashOf(commitId(2))} 2m \u00b7 \u2605 7 \u00b7 \u21b3 2`,
         'second',
         'line two',
@@ -230,7 +234,7 @@ describe('the pane', () => {
       await openPane($, world)
 
       expect(world.requests).toHaveLength(0)
-      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', NOT_SET_UP_TEXT])
+      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', TABS_ROW, NOT_SET_UP_TEXT])
     })
 
     test(`takes an account the store holds in another shape as none, on ${surface}`, async ($, on) => {
@@ -239,7 +243,7 @@ describe('the pane', () => {
       await openPane($, world)
 
       expect(world.requests).toHaveLength(0)
-      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', NOT_SET_UP_TEXT])
+      expect(await rows($, surface)).toEqual(['/dev/nullr: refresh', TABS_ROW, NOT_SET_UP_TEXT])
     })
 
     test(`says it is loading while the request is out, then draws the list, on ${surface}`, async ($, on) => {
@@ -247,7 +251,7 @@ describe('the pane', () => {
       await start($)
       await openPane($, world)
 
-      expect(await rows($, surface)).toEqual([`${HEADER} \u00b7 loading\u2026`, LOADING_TEXT])
+      expect(await rows($, surface)).toEqual([`${HEADER} \u00b7 loading\u2026`, TABS_ROW, LOADING_TEXT])
 
       world.release(ok([apiCommit(1)]))
       await world.clock.settle()
@@ -277,7 +281,7 @@ describe('the pane', () => {
       await start($)
       await openPane($, world)
 
-      expect(await rows($, surface)).toEqual([`${HEADER} \u00b7 updated now`, EMPTY_TEXT])
+      expect(await rows($, surface)).toEqual([`${HEADER} \u00b7 updated now`, TABS_ROW, EMPTY_TEXT])
     })
 
     test(`shows the status number of a failed answer and nothing of its text, on ${surface}`, async ($, on) => {
@@ -291,7 +295,7 @@ describe('the pane', () => {
         const message = await ui.find({ type: 'Text', text: /HTTP/ })
         expect(message?.text).toBe(statusText(status))
         expect(message?.props).toEqual({ color: 'error' })
-        expect(listRowsOf(await ui.drawn())).toEqual([HEADER, statusText(status)])
+        expect(listRowsOf(await ui.drawn())).toEqual([HEADER, TABS_ROW, statusText(status)])
         await ui.unmount()
         await closePane($, world)
       }
@@ -302,7 +306,7 @@ describe('the pane', () => {
       await start($)
       await openPane($, world)
 
-      expect(await rows($, surface)).toEqual([HEADER, NETWORK_TEXT])
+      expect(await rows($, surface)).toEqual([HEADER, TABS_ROW, NETWORK_TEXT])
     })
 
     test(`refuses a 200 that is not exactly a commit list, on ${surface}`, async ($, on) => {
@@ -318,7 +322,7 @@ describe('the pane', () => {
         world.answer({ status: 200, text })
         await openPane($, world)
 
-        expect(await rows($, surface)).toEqual([HEADER, UNREADABLE_TEXT])
+        expect(await rows($, surface)).toEqual([HEADER, TABS_ROW, UNREADABLE_TEXT])
         await closePane($, world)
       }
     })
@@ -335,7 +339,7 @@ describe('the pane', () => {
       await openPane($, world)
 
       const drawn = await rows($, surface)
-      const bodyRows = drawn.slice(2, -1)
+      const bodyRows = drawn.slice(3, -1)
       expect(bodyRows[0]).toBe('click red evil bell')
       expect(bodyRows).toHaveLength(2)
       expect(bodyRows[1]).toEndWith('\u2026')
@@ -368,6 +372,7 @@ describe('the pane', () => {
       expect(links.map(link => link.props.href)).toEqual([linkOn(surface, commitId(1))])
       expect(listRowsOf(await ui.drawn())).toEqual([
         `${HEADER} \u00b7 updated now`,
+        TABS_ROW,
         'abcdef1 now \u00b7 \u2605 0 \u00b7 \u21b3 0',
         'no link',
         `${shortHashOf(commitId(1))} now \u00b7 \u2605 0 \u00b7 \u21b3 0`,
@@ -489,7 +494,7 @@ describe('refreshing', () => {
       await openPane($, world)
 
       const ui = await mountPane($, surface)
-      expect(listRowsOf(await ui.drawn())).toEqual([HEADER, statusText(429), waitText(120)])
+      expect(listRowsOf(await ui.drawn())).toEqual([HEADER, TABS_ROW, statusText(429), waitText(120)])
       await ui.press({ key: 'refresh' })
       await closePane($, world)
       await openPane($, world)
@@ -512,7 +517,7 @@ describe('refreshing', () => {
       await openPane($, world)
 
       const ui = await mountPane($, surface)
-      expect(listRowsOf(await ui.drawn())).toEqual([HEADER, statusText(429)])
+      expect(listRowsOf(await ui.drawn())).toEqual([HEADER, TABS_ROW, statusText(429)])
       await ui.press({ key: 'refresh' })
       await world.clock.settle()
       expect(world.requests).toHaveLength(2)
@@ -586,7 +591,7 @@ describe('the recent list', () => {
     paneWorld(on, { account: ACCOUNT })
     await start($)
 
-    expect(await rows($, 'terminal')).toEqual([`${HEADER} \u00b7 updated now`, EMPTY_TEXT])
+    expect(await rows($, 'terminal')).toEqual([`${HEADER} \u00b7 updated now`, TABS_ROW, EMPTY_TEXT])
   })
 
   test('draws only the page last fetched: a commit gone upstream leaves the pane', async ($, on) => {
@@ -628,14 +633,16 @@ describe('the ages drawn', () => {
       await openPane($, world)
 
       const ui = await mountPane($, surface)
-      expect(listRowsOf(await ui.drawn()).slice(0, 2)).toEqual([
+      expect(listRowsOf(await ui.drawn()).slice(0, 3)).toEqual([
         `${HEADER} \u00b7 updated now`,
+        TABS_ROW,
         `${shortHashOf(commitId(1))} 5h \u00b7 \u2605 3 \u00b7 \u21b3 1`,
       ])
       await world.clock.advance(3 * 3_600_000 + 10 * 60_000)
 
-      expect(listRowsOf(await ui.drawn()).slice(0, 2)).toEqual([
+      expect(listRowsOf(await ui.drawn()).slice(0, 3)).toEqual([
         `${HEADER} \u00b7 updated 3h`,
+        TABS_ROW,
         `${shortHashOf(commitId(1))} 9h \u00b7 \u2605 3 \u00b7 \u21b3 1`,
       ])
       expect(world.requests).toHaveLength(1)
@@ -700,7 +707,7 @@ describe('a failure inside the load', () => {
     await openPane($, world)
 
     expect(world.requests).toHaveLength(0)
-    expect(await rows($, 'terminal')).toEqual(['/dev/nullr: refresh', LOCAL_TEXT])
+    expect(await rows($, 'terminal')).toEqual(['/dev/nullr: refresh', TABS_ROW, LOCAL_TEXT])
     expect(world.toasts).toEqual([])
   })
 
@@ -752,6 +759,7 @@ describe('the marks and ages drawn', () => {
       expect(marks[0]?.props).toMatchObject({ color: 'success', weight: 'bold' })
       expect(listRowsOf(await ui.drawn())).toEqual([
         `${HEADER} \u00b7 updated now`,
+        TABS_ROW,
         `${shortHashOf(commitId(1))} now \u00b7 \u2605 0 \u00b7 \u21b3 2 +2 new`,
         'invented commit number 1',
         'open \u2197',
