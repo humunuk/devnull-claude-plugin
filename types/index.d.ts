@@ -187,10 +187,11 @@ declare module 'claude-code' {
           }
         | { kind: 'ended'; last: FollowingRound; waitUntilMs: number | null }
       /**
-       * No request of the pane goes out before this, in `$.clock.now()`
-       * milliseconds: set by a 429 with Retry-After on any of them, the load's
-       * or a round's, since both share the lane and the per-IP limit
-       * (hooks/pane-core.ts). 0 when nothing asked to wait.
+       * No request of the pane, and no poll of the reply alerts, goes out
+       * before this, in `$.clock.now()` milliseconds: set by a 429 with
+       * Retry-After on any of them, the load's, a round's or a poll's, since
+       * they share the per-IP limit (hooks/pane-core.ts, hooks/alerts.tsx).
+       * 0 when nothing asked to wait.
        */
       paneNotBeforeMs: number
     }

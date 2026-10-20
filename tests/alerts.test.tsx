@@ -11,6 +11,8 @@ import {
   SEEN_NOT_SAVED_TEXT,
 } from '../hooks/alerts'
 import { FAILED_TEXT, notTypedText } from '../hooks/lib/command'
+import { FOLLOWING_IDLE_TEXT, FOLLOWING_LOADING_TEXT } from '../hooks/lib/following'
+import { IDLE_TEXT, LOADING_TEXT, heldText } from '../hooks/lib/pane'
 import { NEW_REPLIES_TITLE, NOT_PLACED_TEXT } from '../hooks/pane'
 import { USERNAME, apiCommit, apiList, commitId, shortHashOf } from './fixtures/commits'
 import {
@@ -662,6 +664,118 @@ describe('polling politely', () => {
     await world.clock.advance(10 * MINUTE)
     expect(world.requests).toHaveLength(4)
   })
+})
+
+describe('one 429 hold for the pane and the poller', () => {
+  test("a 429 on the pane's load holds the next poll until Retry-After has passed", async ($, on) => {
+    const world = alertsWorld(on)
+    await startSession($)
+    await world.clock.settle()
+    expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL])
+
+    world.server.commits = { status: 429, text: 'slow down', headers: { 'retry-after': '600' } }
+    await openPane($, world)
+    // The pane's load asks for the same list as the poller.
+    expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL, COMMITS_URL])
+
+    world.server.commits = ok([])
+    await world.clock.advance(10 * MINUTE - 1)
+    expect(world.requests).toHaveLength(3)
+    await world.clock.advance(1)
+    expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL, COMMITS_URL, COMMITS_URL, REPLIES_URL])
+
+    // A poll skipped for the hold is no failure: the interval stands after it.
+    await world.clock.advance(MINUTE)
+    expect(world.requests).toHaveLength(7)
+    expect(world.logs.join('\n')).not.toContain('HTTP 429')
+  })
+
+  test("the pane's 429 between the poll's two lists keeps the second from going, and the next poll waits for the hold", async ($, on) => {
+    const world = alertsWorld(on, { server: { commits: { status: 200, text: listText([]), delayMs: SECOND }, replies: ok([]) } })
+    await startSession($)
+    await world.clock.settle()
+    expect(world.pending()).toBe(1)
+
+    // The pane's load of the same list meets a 429 while the poll's is out.
+    world.server.commits = { status: 429, text: 'slow down', headers: { 'retry-after': '600' } }
+    await openPane($, world)
+    expect(world.requests).toEqual([COMMITS_URL, COMMITS_URL])
+    world.server.commits = ok([])
+    await world.clock.advance(SECOND)
+    expect(world.pending()).toBe(0)
+    expect(world.requests).toEqual([COMMITS_URL, COMMITS_URL])
+
+    await world.clock.advance(10 * MINUTE - SECOND - 1)
+    expect(world.requests).toHaveLength(2)
+    await world.clock.advance(1)
+    expect(world.requests).toEqual([COMMITS_URL, COMMITS_URL, COMMITS_URL, REPLIES_URL])
+  })
+
+  test("a 429 on a poll whose Retry-After is a date sets no hold: the pane's load goes out", async ($, on) => {
+    const world = alertsWorld(on, {
+      server: { commits: ok([]), replies: { status: 429, text: 'slow down', headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } } },
+    })
+    await startSession($)
+    await world.clock.settle()
+
+    await openPane($, world)
+    expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL, COMMITS_URL])
+  })
+
+  for (const surface of SURFACES) {
+    test(`a 429 on a poll holds the pane's load until Retry-After has passed, on ${surface}`, async ($, on) => {
+      const world = alertsWorld(on, {
+        server: { commits: ok([]), replies: { status: 429, text: 'slow down', headers: { 'retry-after': '600' } } },
+      })
+      await startSession($)
+      await world.clock.settle()
+      expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL])
+
+      await openPane($, world)
+      const ui = await mountPane($, surface)
+      // Nothing is loading and r would send nothing: the pane says how long to wait.
+      const held = listRowsOf(await ui.drawn())
+      expect(held).toContain(heldText(600))
+      expect(held).not.toContain(LOADING_TEXT)
+      expect(held).not.toContain(IDLE_TEXT)
+      await world.clock.advance(10 * MINUTE - 1)
+      await ui.press({ key: 'refresh' })
+      await world.clock.settle()
+      expect(world.requests).toHaveLength(2)
+
+      // When the hold ends the poller goes on, and a refresh loads the pane.
+      world.server = { commits: ok([1]), replies: ok([]) }
+      await world.clock.advance(1)
+      expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL, COMMITS_URL, REPLIES_URL])
+      await ui.press({ key: 'refresh' })
+      await world.clock.settle()
+      expect(world.requests).toEqual([COMMITS_URL, REPLIES_URL, COMMITS_URL, REPLIES_URL, COMMITS_URL])
+      const loaded = listRowsOf(await ui.drawn())
+      expect(loaded).toContain('invented commit number 1')
+      expect(loaded.some(row => row.startsWith('dev-null.sh asked to wait'))).toBe(false)
+      await ui.unmount()
+    })
+
+    test(`a 429 on a poll, then the Following tab with no round yet, draws the wait, on ${surface}`, async ($, on) => {
+      const world = alertsWorld(on, {
+        server: { commits: ok([]), replies: { status: 429, text: 'slow down', headers: { 'retry-after': '600' } } },
+      })
+      await startSession($)
+      await world.clock.settle()
+
+      await openPane($, world)
+      const ui = await mountPane($, surface)
+      await ui.press({ key: 'tab-following' })
+      await world.clock.settle()
+      // The tab press asked for a round, which the hold kept from starting.
+      expect(world.requests).toHaveLength(2)
+      const held = listRowsOf(await ui.drawn())
+      expect(held).toContain(heldText(600))
+      expect(held).not.toContain(FOLLOWING_LOADING_TEXT)
+      expect(held).not.toContain(FOLLOWING_IDLE_TEXT)
+      await ui.unmount()
+    })
+  }
 })
 
 describe('a list that is not exactly what the mod expects', () => {

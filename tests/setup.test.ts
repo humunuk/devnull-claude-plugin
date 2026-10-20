@@ -16,11 +16,12 @@ import {
   STORE_FAILED_TEXT,
   USER_NOT_FOUND_TEXT,
   failedText,
+  heldText,
   rateLimitedText,
 } from '../hooks/setup'
 import { ECDSA, ED25519, RSA, RSA_1024 } from './fixtures/keys'
 import { apiProfile } from './fixtures/profiles'
-import { PROFILE_URL, agentList, devnull, world } from './helpers'
+import { NOW, PROFILE_URL, agentList, devnull, watchHold, world } from './helpers'
 
 const AGENT = { exitCode: 0, stdout: agentList(`${ED25519.line} ${ED25519.comment}`, `${RSA.line} ${RSA.comment}`) }
 
@@ -335,6 +336,61 @@ describe('/devnull setup <key> <username>, the username', () => {
 
     expect(await devnull($, 'setup 1 some-user')).toBe(rateLimitedText(37))
     expect(writes).toEqual([])
+  })
+
+  test("a 429 with Retry-After holds the mod's requests: setup sends nothing and says how long", async ($, on) => {
+    const hold = watchHold(on)
+    const answers = world(on, AGENT, FOUND_ED25519, { profile: { status: 429, text: SERVER_TEXT, headers: { 'retry-after': '120' } } })
+
+    expect(await devnull($, 'setup 1 some-user')).toBe(rateLimitedText(120))
+    expect(answers.requests).toEqual([KEY_LOOKUP, profileRequest('some-user')])
+    expect(hold.written).toEqual([NOW + 120_000])
+
+    await answers.clock.advance(30_000)
+    expect(await devnull($, 'setup 1 some-user')).toBe(heldText(90))
+    expect(answers.requests).toHaveLength(2)
+
+    await answers.clock.advance(90_000)
+    expect(await devnull($, 'setup 1 some-user')).toBe(rateLimitedText(120))
+    expect(answers.requests).toHaveLength(4)
+    expect(answers.writes).toEqual([])
+  })
+
+  test('a 429 whose Retry-After is a date sets no hold', async ($, on) => {
+    const hold = watchHold(on)
+    const answers = world(on, AGENT, FOUND_ED25519, {
+      profile: { status: 429, text: '', headers: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } },
+    })
+
+    expect(await devnull($, 'setup 1 some-user')).toBe(rateLimitedText(undefined))
+    expect(await devnull($, 'setup 1 some-user')).toBe(rateLimitedText(undefined))
+    expect(answers.requests).toHaveLength(4)
+    expect(hold.written).toEqual([])
+  })
+
+  test('while a hold another request set is in force, sends nothing and says how long to wait', async ($, on) => {
+    const hold = watchHold(on)
+    const answers = world(on, AGENT, FOUND_ED25519)
+    // The pane or a poll met a 429 asking for 75.5 seconds.
+    hold.set(NOW + 75_500)
+
+    expect(await devnull($, 'setup 1 some-user')).toBe(heldText(76))
+    expect(answers.requests).toEqual([])
+    expect(answers.writes).toEqual([])
+  })
+
+  test('a hold that comes into force while the key lookup is out stops the profile request', async ($, on) => {
+    const hold = watchHold(on)
+    // The hold comes while the key lookup is out, as a poll's 429 could set it.
+    const answers = world(on, AGENT, FOUND_ED25519, {
+      onRequest: url => {
+        if (url === KEY_LOOKUP.url) hold.set(NOW + 30_000)
+      },
+    })
+
+    expect(await devnull($, 'setup 1 some-user')).toBe(heldText(30))
+    expect(answers.requests).toEqual([KEY_LOOKUP])
+    expect(answers.writes).toEqual([])
   })
 
   for (const status of [500, 503, 403, 201, 302]) {

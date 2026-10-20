@@ -2,7 +2,15 @@
 // /dev/null username once dev-null.sh confirms it knows the key and has a user
 // of that username. The hook only checks who asked and hands `runSetup` the
 // four things it may do outside the mod: run `ssh-add -L`, send the key
-// lookup, ask for the profile, and keep the choice.
+// lookup, ask for the profile, and keep the choice, besides reading and
+// setting the mod's one 429 hold (pane-core).
+//
+// The profile GET is on the public API, whose per-IP limit the pane and the
+// reply alerts share: while the hold is in force it is not sent, and its own
+// 429 with Retry-After sets the hold. The key lookup has a throttle of its own
+// (`/api/cli/key-lookups`), so its 429 sets no hold; but while the hold is in
+// force setup sends nothing at all, as the profile GET it leads to would be
+// held anyway.
 
 import type { HttpResponse, On, ProcessRunResult } from 'claude-code'
 
@@ -17,6 +25,7 @@ import { KEY_LOOKUP_URL, keyLookupRequest, readLookup } from './lib/lookup'
 import type { LookupOutcome } from './lib/lookup'
 import { PROFILE_REQUEST, readProfile, userProfileUrl } from './lib/user'
 import type { ProfileOutcome } from './lib/user'
+import { holdRequestsUntil, readNotBefore } from './pane-core'
 
 const LIST_USAGE = '/devnull setup                    list the keys in your SSH agent'
 const CHOOSE_USAGE = '/devnull setup <key> <username>   sign with that key (its number or SHA256: fingerprint) as that /dev/null user'
@@ -76,6 +85,13 @@ export type SetupIo = {
   /** Asks for the profile at that URL, one userProfileUrl built. */
   lookUpUser: (url: string) => Promise<HttpResponse>
   saveAccount: (account: Account) => Promise<void>
+  now: () => Promise<number>
+  /** When the mod's requests may go out again after a 429; 0 when nothing asked to wait. */
+  readNotBefore: () => Promise<number>
+  /** Holds the mod's requests back until `atMs`, or later when they are already. */
+  holdUntil: (atMs: number) => Promise<unknown>
+  /** A line for the debug log alone. */
+  log: (text: string) => void
 }
 
 export function registerSetup(on: On): void {
@@ -89,6 +105,10 @@ export function registerSetup(on: On): void {
       lookUpKey: publicKey => $.http.fetch(KEY_LOOKUP_URL, keyLookupRequest(publicKey)),
       lookUpUser: url => $.http.fetch(url, PROFILE_REQUEST),
       saveAccount: account => $.store.set(ACCOUNT_KEY, account),
+      now: () => $.clock.now(),
+      readNotBefore: () => readNotBefore($),
+      holdUntil: atMs => holdRequestsUntil($, atMs),
+      log: text => $.ui.log(text, { to: 'debug' }),
     }
 
     return { text: await runSetup(io, rest) }
@@ -129,6 +149,9 @@ async function chooseKey(io: SetupIo, choiceText: string, username: string): Pro
   const key = findKey(agent.keys, choice)
   if (key === undefined) return KEY_NOT_IN_AGENT_TEXT
 
+  const heldFor = await heldSecondsOf(io)
+  if (heldFor !== undefined) return heldText(heldFor)
+
   let outcome: LookupOutcome
   try {
     outcome = readLookup(key.publicKey, await io.lookUpKey(key.publicKey))
@@ -157,6 +180,10 @@ async function chooseKey(io: SetupIo, choiceText: string, username: string): Pro
 
 /** Once the key is known: saves the choice only when dev-null.sh has a user of exactly that username. */
 async function checkUserAndSave(io: SetupIo, key: AgentKey, username: string, profileUrl: string): Promise<string> {
+  // A poll or the pane may have met a 429 while the key lookup was out.
+  const heldFor = await heldSecondsOf(io)
+  if (heldFor !== undefined) return heldText(heldFor)
+
   let outcome: ProfileOutcome
   try {
     outcome = readProfile(username, await io.lookUpUser(profileUrl))
@@ -179,6 +206,8 @@ async function checkUserAndSave(io: SetupIo, key: AgentKey, username: string, pr
     case 'not-found':
       return USER_NOT_FOUND_TEXT
     case 'rate-limited':
+      await holdAfter429(io, outcome.retryAfterSeconds)
+
       return rateLimitedText(outcome.retryAfterSeconds)
     case 'failed':
       return failedText(outcome.status)
@@ -187,6 +216,24 @@ async function checkUserAndSave(io: SetupIo, key: AgentKey, username: string, pr
 
       return unknownOutcome
     }
+  }
+}
+
+/** The seconds left of the mod's 429 hold, rounded up, or undefined when it is not in force. */
+async function heldSecondsOf(io: SetupIo): Promise<number | undefined> {
+  const notBeforeMs = await io.readNotBefore()
+  const now = await io.now()
+
+  return now < notBeforeMs ? Math.ceil((notBeforeMs - now) / 1000) : undefined
+}
+
+/** The profile's 429 with a usable Retry-After holds the pane and the reply alerts back too. */
+async function holdAfter429(io: SetupIo, retryAfterSeconds: number | undefined): Promise<void> {
+  if (retryAfterSeconds === undefined) return
+  try {
+    await io.holdUntil((await io.now()) + retryAfterSeconds * 1000)
+  } catch {
+    io.log('devnull: a 429 on the profile lookup could not hold the mod\'s other requests back.')
   }
 }
 
@@ -230,6 +277,10 @@ export function savedText(key: AgentKey, username: string): string {
     `Saved. /devnull will sign with ${describeKey(key)}`,
     `and post as ${username}. dev-null.sh knows this key and this username; your first post shows whether they belong together.`,
   ].join('\n')
+}
+
+export function heldText(seconds: number): string {
+  return `dev-null.sh asked to wait, so nothing was sent and nothing was saved. Run /devnull setup again in ${seconds} seconds.`
 }
 
 export function rateLimitedText(retryAfterSeconds: number | undefined): string {

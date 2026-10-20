@@ -17,10 +17,12 @@
 // only one whose answer can never come back is that old), and the next goes
 // ahead of it. A 429 with Retry-After on any of them holds back both the
 // load and the round (`paneNotBeforeMs` in `$.state`): they share the lane
-// and the per-IP limit. Every close of the pane (`/devnull`, `/devnull off`,
-// the person's own close mark or ctrl+x x) and the session's end stop the
-// requests the pane started (stopPane): one not yet sent is not sent, and a
-// round ends with what arrived.
+// and the per-IP limit. The reply alerts share that limit too, so they read
+// and set the same hold through readNotBefore and holdRequestsUntil. Every
+// close of the pane (`/devnull`, `/devnull off`, the person's own close mark
+// or ctrl+x x) and the session's end stop the requests the pane started
+// (stopPane): one not yet sent is not sent, and a round ends with what
+// arrived.
 //
 // The lane is a module variable: a hot reload starts a new one. reference.md
 // says of a reload only that `register` runs again in a fresh environment and
@@ -91,6 +93,11 @@ const NOT_BEFORE = atom({ plugin: 'devnull', key: 'paneNotBeforeMs' } as const, 
 
 const STOPPED_ERROR = 'devnull: the pane was closed, so its request was not sent'
 
+const HELD_ERROR = 'devnull: dev-null.sh asked to wait, so the pane request was not sent'
+
+/** A request the lane did not send because a 429 hold came into force while it waited. */
+class HeldError extends Error {}
+
 /** How often an open pane is redrawn, so the ages it shows move on. */
 export const TICK_MS = 60_000
 
@@ -137,9 +144,11 @@ export function stopPane(): void {
  * Starts `request` once the request the pane started before it has settled,
  * or at once when that one has been out for LOAD_STALE_MS. Each waits for the
  * one before, so one request is out at a time. Rejects, sending nothing, when
- * the pane's requests were stopped while it waited.
+ * the pane's requests were stopped while it waited, and with a HeldError when
+ * the 429 hold (`readHold`, the mod's `paneNotBeforeMs`) is in force as it
+ * would go out: a hold set while it waited, by the pane or a poll, stops it.
  */
-function inLane<T>(now: () => Promise<number>, request: () => Promise<T>): Promise<T> {
+function inLane<T>(now: () => Promise<number>, readHold: () => Promise<number>, request: () => Promise<T>): Promise<T> {
   const before = lastTurn
   const own: Turn = { settled: Promise.resolve(), startedAtMs: undefined }
   const stopsAtEntry = stops
@@ -147,7 +156,9 @@ function inLane<T>(now: () => Promise<number>, request: () => Promise<T>): Promi
     const enteredAtMs = await now()
     if (!isLost(before, enteredAtMs)) await before.settled
     if (stops !== stopsAtEntry) throw new Error(STOPPED_ERROR)
-    own.startedAtMs = await now()
+    const startAtMs = await now()
+    if (startAtMs < (await readHold())) throw new HeldError(HELD_ERROR)
+    own.startedAtMs = startAtMs
 
     return request()
   }
@@ -163,6 +174,19 @@ function inLane<T>(now: () => Promise<number>, request: () => Promise<T>): Promi
 
 function isLost(turn: Turn, nowMs: number): boolean {
   return turn.startedAtMs !== undefined && nowMs >= turn.startedAtMs && nowMs - turn.startedAtMs >= LOAD_STALE_MS
+}
+
+/**
+ * When the mod's requests to dev-null.sh may go out again after a 429 with
+ * Retry-After, the pane's or the reply alerts'; 0 when nothing asked to wait.
+ */
+export function readNotBefore($: StateDollar): Promise<number> {
+  return read($, NOT_BEFORE)
+}
+
+/** Holds the mod's requests to dev-null.sh back until `atMs`, or later when they are already. */
+export function holdRequestsUntil($: StateDollar, atMs: number): Promise<number> {
+  return update($, NOT_BEFORE, current => Math.max(current, atMs))
 }
 
 /** Where the load stands; a drawing that reads it is drawn again when it changes. */
@@ -273,6 +297,7 @@ export async function load($: EngineInterface): Promise<void> {
     fetchCommits: url =>
       inLane(
         () => $.clock.now(),
+        () => readNotBefore($),
         () => {
           if (loadClaim !== undefined && loadClaim.token === ownToken) loadClaim.isSent = true
 
@@ -281,8 +306,8 @@ export async function load($: EngineInterface): Promise<void> {
       ),
     storeCommits: (username, commits, nowMs) => storeRecent($, username, commits, nowMs),
     changeLoad: change => update($, LOAD, change),
-    readNotBefore: () => read($, NOT_BEFORE),
-    holdUntil: atMs => update($, NOT_BEFORE, current => Math.max(current, atMs)),
+    readNotBefore: () => readNotBefore($),
+    holdUntil: atMs => holdRequestsUntil($, atMs),
     isStopped: () => stops !== stopsAtStart,
     holdClaim: token => {
       ownToken = token
@@ -337,10 +362,11 @@ export async function runLoad(io: PaneIo): Promise<void> {
     let answer: CommitsAnswer
     try {
       answer = readCommitsAnswer(await io.fetchCommits(url))
-    } catch {
-      // Stopped before it went out (the pane closed): not a failure of
-      // dev-null.sh's, and the claim goes to the next load.
-      if (io.isStopped()) {
+    } catch (error) {
+      // Stopped before it went out (the pane closed), or held back by a 429
+      // hold set while it waited in the lane: not a failure of dev-null.sh's,
+      // and the claim goes to the next load. The pane says how long to wait.
+      if (io.isStopped() || error instanceof HeldError) {
         await io.changeLoad(current => dropLoad(current, mine))
 
         return
@@ -413,10 +439,15 @@ export async function followRound($: EngineInterface, trigger: RoundTrigger, aft
     now: () => $.clock.now(),
     newToken: () => crypto.randomUUID(),
     readAccount: () => $.store.get(ACCOUNT_KEY),
-    fetchList: url => inLane(() => $.clock.now(), () => $.http.fetch(url, COMMITS_REQUEST)),
+    fetchList: url =>
+      inLane(
+        () => $.clock.now(),
+        () => readNotBefore($),
+        () => $.http.fetch(url, COMMITS_REQUEST),
+      ),
     changeRound: change => update($, FOLLOWING, change),
-    readNotBefore: () => read($, NOT_BEFORE),
-    holdUntil: atMs => update($, NOT_BEFORE, current => Math.max(current, atMs)),
+    readNotBefore: () => readNotBefore($),
+    holdUntil: atMs => holdRequestsUntil($, atMs),
     isStopped: () => stops !== stopsAtStart,
   }
 
@@ -462,15 +493,19 @@ export async function runRound(io: RoundIo, trigger: RoundTrigger, after: Promis
 
     await after
     let follow: FollowAnswer
+    let isHeld = false
     try {
       follow = readFollowAnswer(await io.fetchList(followingUrl))
-    } catch {
+    } catch (error) {
       // No answer within 30 s, a refused connection, the fetch was refused,
-      // or the pane's requests were stopped before it went out.
+      // the pane's requests were stopped before it went out, or a 429 hold
+      // came into force while it waited in the lane.
+      isHeld = error instanceof HeldError
       follow = { kind: 'problem', problem: { kind: 'network' } }
     }
-    // Stopped before any person's list was asked for: nothing to show.
-    if (io.isStopped()) {
+    // Stopped or held before any person's list was asked for: nothing to
+    // show but the round before, and no failure; the tab says how long to wait.
+    if (io.isStopped() || isHeld) {
       await io.changeRound(current => dropRound(current, mine))
 
       return
@@ -504,11 +539,21 @@ export async function runRound(io: RoundIo, trigger: RoundTrigger, after: Promis
         break
       }
       const stepAt = await io.now()
+      // A 429 on any of the mod's requests (the load, a poll) since the round
+      // began holds the rest back: it ends here as cut, with what arrived.
+      if (stepAt < (await io.readNotBefore())) {
+        cut = { retryAfterSeconds: undefined }
+        break
+      }
       const stepped = await io.changeRound(current => stepRound(current, mine, stepAt))
       // A newer round took over after this one went still: it stops here.
       if (stepped.kind !== 'loading' || stepped.token !== mine) return
 
       const answer = await fetchCommitsOf(io, person)
+      if (answer.kind === 'held') {
+        cut = { retryAfterSeconds: undefined }
+        break
+      }
       if (answer.kind === 'list') {
         commits.push(...theirCommits(person, answer.commits))
         continue
@@ -557,14 +602,17 @@ export async function runRound(io: RoundIo, trigger: RoundTrigger, after: Promis
   }
 }
 
-/** One followed person's commit list; a failed request is a network problem. */
-async function fetchCommitsOf(io: RoundIo, person: string): Promise<CommitsAnswer> {
+/**
+ * One followed person's commit list; a failed request is a network problem,
+ * and one the lane held back for a 429 hold is `held`.
+ */
+async function fetchCommitsOf(io: RoundIo, person: string): Promise<CommitsAnswer | { kind: 'held' }> {
   const url = userCommitsUrl(person)
   // Never so: the follow list's guard holds every name to the same pattern.
   if (url === undefined) return { kind: 'problem', problem: { kind: 'unreadable' } }
   try {
     return readCommitsAnswer(await io.fetchList(url))
-  } catch {
-    return { kind: 'problem', problem: { kind: 'network' } }
+  } catch (error) {
+    return error instanceof HeldError ? { kind: 'held' } : { kind: 'problem', problem: { kind: 'network' } }
   }
 }

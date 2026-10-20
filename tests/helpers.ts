@@ -1,10 +1,12 @@
 // The world beneath the mod in a test: an SSH agent answering `ssh-add -L`,
-// dev-null.sh answering the key lookup and the profile lookup, and a store
-// that records each write (or refuses it). Each hook records what the mod
+// dev-null.sh answering the key lookup and the profile lookup, a store that
+// records each write (or refuses it), and a clock that moves only when the
+// test moves it. Each hook records what the mod
 // asked, so a test can show what was (not) run, sent or kept.
 
 import type { HttpInit, HttpResponse, On, ProcessRunInit, PromptOrigin } from 'claude-code'
-import type { Engine } from 'claude-code/testing'
+import { mock } from 'claude-code/testing'
+import type { Engine, MockClock } from 'claude-code/testing'
 
 import { apiProfile } from './fixtures/profiles'
 
@@ -19,21 +21,31 @@ export type Profile = Server | 'echo'
 
 export const PROFILE_URL = 'https://dev-null.sh/api/v1/users/'
 
+export const NOW = Date.UTC(2026, 9, 20, 12, 0, 0)
+
 export type World = {
   runs: { argv: readonly string[]; init: ProcessRunInit | undefined }[]
   requests: { url: string; init: HttpInit | undefined }[]
   writes: { key: string; value: unknown }[]
+  clock: MockClock
 }
 
 export function world(
   on: On,
   agent: Agent,
   server?: Server,
-  options: { isStoreBroken?: boolean; profile?: Profile } = {},
+  options: {
+    isStoreBroken?: boolean
+    profile?: Profile
+    /** Runs as each request arrives, before it is answered. */
+    onRequest?: (url: string) => void
+  } = {},
 ): World {
   const runs: World['runs'] = []
   const requests: World['requests'] = []
   const writes: World['writes'] = []
+
+  const clock = mock.clock(on, { now: NOW })
 
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -53,6 +65,7 @@ export function world(
 
   on('http.fetch', (_, e) => {
     requests.push({ url: e.url, init: e.init })
+    options.onRequest?.(e.url)
     const answer = e.url.startsWith(PROFILE_URL) ? profileAnswer(e.url, options.profile ?? 'echo') : server
     if (answer === undefined) return { deny: 'this test sends nothing' }
     if (answer === 'unreachable') return { deny: 'getaddrinfo ENOTFOUND dev-null.sh' }
@@ -66,13 +79,39 @@ export function world(
     return { value: response }
   })
 
-  return { runs, requests, writes }
+  return { runs, requests, writes, clock }
 }
 
 function profileAnswer(url: string, profile: Profile): Server {
   if (profile !== 'echo') return profile
 
   return { status: 200, text: JSON.stringify(apiProfile(url.slice(PROFILE_URL.length))) }
+}
+
+/**
+ * The mod's one 429 hold (`devnull.paneNotBeforeMs`) as a test sees it: each
+ * value written, and `set`, which makes every read answer `atMs` as if
+ * another of the mod's requests had met a 429 (undefined goes back to what
+ * the mod wrote).
+ */
+export function watchHold(on: On): { written: unknown[]; set: (atMs: number | undefined) => void } {
+  const written: unknown[] = []
+  let forced: number | undefined
+  on('state.get', { plugin: 'devnull', key: 'paneNotBeforeMs' }, (_, e, next) =>
+    forced === undefined ? next(e) : { value: { value: forced, version: 0 } },
+  )
+  on('state.set', { plugin: 'devnull', key: 'paneNotBeforeMs' }, (_, e, next) => {
+    written.push(e.value)
+
+    return next(e)
+  })
+
+  return {
+    written,
+    set: atMs => {
+      forced = atMs
+    },
+  }
 }
 
 /** Runs `/devnull <args>` as the session would, from `origin`. */

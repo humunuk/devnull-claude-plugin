@@ -20,10 +20,10 @@ import { ESC_HINT, INPUT_LABEL, NOT_PLACED_TEXT, isPostingSurface } from '../hoo
 import { LOAD_FAILED_TOAST, TICK_MS } from '../hooks/pane-core'
 import {
   NO_ACCOUNT_TEXT,
+  OTHER_ACCOUNT_TEXT,
   PENDING_TEXT,
   REFUSED_COMMIT_TEXT,
   UNAUTHORIZED_TEXT,
-  otherUsernameText,
   tooLongText,
 } from '../hooks/posting'
 import { USERNAME, apiCommit, apiList, commitId, shortHashOf } from './fixtures/commits'
@@ -1117,7 +1117,7 @@ describe('the input', () => {
       RULE,
       FIELD,
       `${COMMITTED_TEXT}open \u2197`,
-      otherUsernameText('other-name', USERNAME),
+      ...OTHER_ACCOUNT_TEXT.split('\n'),
     ])
     expect((await reopened.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkOn('terminal', COMMIT_ID, 'other-name')])
     await reopened.unmount()

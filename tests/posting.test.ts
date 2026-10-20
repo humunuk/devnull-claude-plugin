@@ -9,6 +9,7 @@ import {
   COMMIT_EMPTY_TEXT,
   NOT_FOUND_TEXT,
   NO_ACCOUNT_TEXT,
+  OTHER_ACCOUNT_TEXT,
   PENDING_TEXT,
   REFUSED_COMMIT_TEXT,
   REFUSED_REPLY_TEXT,
@@ -20,7 +21,6 @@ import {
   WRITE_FAILED_TEXT,
   keyNotInAgentText,
   leftBehindText,
-  otherUsernameText,
   rateLimitedText,
   serverErrorText,
   signExitedText,
@@ -156,17 +156,31 @@ describe('/devnull commit', () => {
     )
   })
 
-  test('notes a username other than the one saved, and keeps the saved one', async ($, on) => {
+  test('notes a username other than the one saved in fixed words, and keeps the saved one', async ($, on) => {
     const world = postingWorld(on, { server: { status: 201, text: `Committed: https://dev-null.sh/@Other-Name/commits/${COMMIT_ID}\n` } })
 
     const text = await devnull($, 'commit hello')
 
-    expect(text).toBe(
-      [`Committed: https://dev-null.sh/@Other-Name/commits/${COMMIT_ID}`, otherUsernameText('Other-Name', 'some-user')].join(
-        '\n',
-      ),
-    )
+    expect(text).toBe(OTHER_ACCOUNT_TEXT)
     expect(world.events.filter(event => event.kind === 'store-set')).toEqual([])
+  })
+
+  test("puts neither the other username nor a link into the command's text", async ($, on) => {
+    const pending = ' (pending review, only you can see it until it is approved)'
+    postingWorld(on, { server: { status: 201, text: `Committed: https://dev-null.sh/@Other-Name/commits/${COMMIT_ID}${pending}\n` } })
+
+    const text = await devnull($, 'commit hello')
+
+    expect(text).toBe([OTHER_ACCOUNT_TEXT, PENDING_TEXT].join('\n'))
+    expect(text.toLowerCase()).not.toContain('other-name')
+    expect(text).not.toContain('https://')
+    expect(text).not.toContain(COMMIT_ID)
+  })
+
+  test('builds the link from the saved username when dev-null.sh answers with the same one', async ($, on) => {
+    postingWorld(on, { server: CREATED })
+
+    expect(await devnull($, 'commit hello')).toBe(`Committed: https://dev-null.sh/@${ACCOUNT.username}/commits/${COMMIT_ID}`)
   })
 })
 

@@ -1,6 +1,6 @@
 {
   "name": "devnull",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unofficial mod for dev-null.sh: post to /dev/null from Claude Code, signed with your SSH agent. Not made by or affiliated with dev-null.sh.",
   "author": { "name": "Siim Kallari" },
   "homepage": "https://github.com/humunuk/devnull-claude-plugin",

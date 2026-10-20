@@ -59,6 +59,7 @@ import {
   load,
   readFollowing,
   readLoad,
+  readNotBefore,
   reloadPaneIfOpen,
   shutPane,
   startTicker,
@@ -160,8 +161,9 @@ export function registerPane(on: On): void {
     const loadNow = await readLoad($)
     const nowMs = await $.clock.now()
     const marks = [...(await read($, MARKS)), ...(await readReplyAlerts($))]
-    const view = paneView(loadNow, await readRecent($), marks, nowMs, e.surface)
-    const following = tab === 'following' ? followingView(await readFollowing($), nowMs, e.surface) : undefined
+    const notBeforeMs = await readNotBefore($)
+    const view = paneView(loadNow, await readRecent($), marks, nowMs, e.surface, notBeforeMs)
+    const following = tab === 'following' ? followingView(await readFollowing($), nowMs, e.surface, notBeforeMs) : undefined
     const freshness = following === undefined ? view.freshness : following.freshness
     const refresh = () => (tab === 'following' ? followRound($, 'refresh') : load($))
 

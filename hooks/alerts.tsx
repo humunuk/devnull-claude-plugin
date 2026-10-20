@@ -21,6 +21,10 @@
 // adding one. What must outlive a reload (the alerts on show, the back-off,
 // when the next poll is due) is in `$.state`; what must outlive the session
 // (what was seen, and what was toasted) is in the seen record in `$.store`.
+//
+// The poller and the pane share dev-null.sh's per-IP limit, so they share one
+// 429 hold, kept by pane-core (readNotBefore, holdRequestsUntil): no poll goes
+// out while it is in force, and a 429 with Retry-After on a poll sets it.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, HttpResponse, On, PluginOptions, SessionEndReason, StateDollar, Timer } from 'claude-code'
@@ -42,9 +46,9 @@ import {
   storedSeen,
 } from './lib/alerts'
 import type { ListResult } from './lib/alerts'
-import { pollDelayMs } from './lib/backoff'
+import { pollDelayMs, retryAfterSeconds } from './lib/backoff'
 import { FAILED_TEXT, isTypedByPerson, notTypedText, splitSubcommand } from './lib/command'
-import { closePane } from './pane-core'
+import { closePane, holdRequestsUntil, readNotBefore } from './pane-core'
 import { storeRecent } from './recent'
 
 const ON_USAGE = '/devnull on                       check for new replies again (the default)'
@@ -92,6 +96,10 @@ export type AlertsIo = {
   status: (text: string | undefined) => void
   /** A line for the debug log alone. */
   log: (text: string) => void
+  /** When the mod's requests may go out again after a 429, the pane's or a poll's; 0 when nothing asked to wait. */
+  readNotBefore: () => Promise<number>
+  /** Holds the mod's requests, the pane's too, back until `atMs`, or later when they are already. */
+  holdUntil: (atMs: number) => Promise<unknown>
 }
 
 function alertsIo($: EngineInterface): AlertsIo {
@@ -107,6 +115,8 @@ function alertsIo($: EngineInterface): AlertsIo {
     toast: text => $.ui.toast(text),
     status: text => $.ui.status(text),
     log: text => $.ui.log(text, { to: 'debug' }),
+    readNotBefore: () => readNotBefore($),
+    holdUntil: atMs => holdRequestsUntil($, atMs),
   }
 }
 
@@ -237,6 +247,7 @@ async function tick(current: Poller): Promise<void> {
 type PollOutcome =
   | { kind: 'done'; retryAfter: string | undefined }
   | { kind: 'no-account' }
+  | { kind: 'held'; untilMs: number }
   | { kind: 'failed'; status: number | undefined; retryAfter: string | undefined }
   | { kind: 'stopped' }
 
@@ -256,7 +267,11 @@ async function pollAndSchedule(current: Poller): Promise<void> {
         return
       case 'failed':
         io.log(`devnull: checking for replies failed (${outcome.status === undefined ? 'no answer' : `HTTP ${outcome.status}`}).`)
+        if (outcome.status === 429) await holdAfter429(io, outcome.retryAfter)
         await scheduleNext(current, true, outcome.retryAfter)
+        return
+      case 'held':
+        await scheduleHeld(current, outcome.untilMs)
         return
       case 'no-account':
       case 'done':
@@ -271,6 +286,29 @@ async function pollAndSchedule(current: Poller): Promise<void> {
     // The state could not be written: go on at the interval from here.
     if (poller === current) schedule(current, pollDelayMs({ intervalSeconds, consecutiveFailures: 0, retryAfter: undefined }))
   }
+}
+
+/**
+ * A 429 with a usable Retry-After on a poll holds the pane's requests back as
+ * well: they share the per-IP limit. The poller's own back-off stands beside
+ * it. A hold that cannot be kept leaves the back-off alone, with a log line.
+ */
+async function holdAfter429(io: AlertsIo, retryAfter: string | undefined): Promise<void> {
+  const seconds = retryAfterSeconds(retryAfter)
+  if (seconds === undefined) return
+  try {
+    await io.holdUntil((await io.now()) + seconds * 1000)
+  } catch {
+    io.log('devnull: a 429 on checking for replies could not hold the pane back.')
+  }
+}
+
+/** A poll skipped while a 429 holds the mod's requests back: the next is due when the hold ends, no failure counted. */
+async function scheduleHeld(current: Poller, untilMs: number): Promise<void> {
+  const { io } = current
+  const now = await io.now()
+  await io.updateState(state => ({ ...state, nextPollAtMs: untilMs }))
+  if (poller === current) schedule(current, Math.max(0, untilMs - now))
 }
 
 /** Keeps the back-off and when the next poll is due, and sets its timer. */
@@ -299,11 +337,16 @@ async function poll(current: Poller): Promise<PollOutcome> {
   }
 
   // One after the other: one request in flight, and none sent once the
-  // poller was stopped (`/devnull off`) while the one before was out. A list
-  // that fails changes nothing.
+  // poller was stopped (`/devnull off`) while the one before was out, or
+  // while a 429 on any of the mod's requests holds them back. A list that
+  // fails changes nothing.
+  const heldBefore = await heldUntil(io)
+  if (heldBefore !== undefined) return { kind: 'held', untilMs: heldBefore }
   const commits = await fetchList(io, urls.commits)
   if (commits.kind === 'failed') return commits
   if (poller !== current) return { kind: 'stopped' }
+  const heldBetween = await heldUntil(io)
+  if (heldBetween !== undefined) return { kind: 'held', untilMs: heldBetween }
   const replies = await fetchList(io, urls.replies)
   if (replies.kind === 'failed') return replies
   if (poller !== current) return { kind: 'stopped' }
@@ -313,6 +356,14 @@ async function poll(current: Poller): Promise<PollOutcome> {
   await showCounts(current, account.username, all)
 
   return { kind: 'done', retryAfter: replies.retryAfter }
+}
+
+/** When the hold a 429 set ends, while it is still in force; else undefined. */
+async function heldUntil(io: AlertsIo): Promise<number | undefined> {
+  const notBeforeMs = await io.readNotBefore()
+  const now = await io.now()
+
+  return now < notBeforeMs ? notBeforeMs : undefined
 }
 
 async function fetchList(io: AlertsIo, url: string): Promise<ListResult> {

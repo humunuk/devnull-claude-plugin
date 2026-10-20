@@ -49,6 +49,19 @@ export function waitText(seconds: number): string {
   return `dev-null.sh asked to wait ${seconds} seconds before the next try.`
 }
 
+/** What a tab draws while a 429 holds the mod's requests back and r would send nothing. */
+export function heldText(seconds: number): string {
+  return `dev-null.sh asked to wait ${seconds}s. Press r after that.`
+}
+
+/**
+ * The seconds left of the 429 hold at `nowMs` (`paneNotBeforeMs`), rounded
+ * up, or undefined when it is not in force.
+ */
+export function heldSecondsLeft(notBeforeMs: number, nowMs: number): number | undefined {
+  return nowMs < notBeforeMs ? Math.ceil((notBeforeMs - nowMs) / 1000) : undefined
+}
+
 export const COMMITS_REQUEST: HttpInit = { method: 'GET', headers: { Accept: 'application/json' } }
 
 /** `https://dev-null.sh/api/v1/users/<username>/commits`, or undefined when the username is not valid. */
@@ -210,7 +223,10 @@ export type PaneView = {
  * The pane's content on `surface` for the load, the recent list and the
  * `+N new` marks (see paneCommits) as they stand at `nowMs`. The `updated`
  * age is the load's own last page, not the recent list's, which the reply
- * alerts move too.
+ * alerts move too. While the 429 hold (`notBeforeMs`) is in force, startLoad
+ * starts nothing, so a pane with no load in flight says how long to wait
+ * instead of offering an r that would send nothing; a page already drawn
+ * stays, with that note.
  */
 export function paneView(
   load: PaneLoad,
@@ -218,6 +234,7 @@ export function paneView(
   alerts: readonly ReplyAlert[],
   nowMs: number,
   surface: RenderSurface,
+  notBeforeMs = 0,
 ): PaneView {
   const username = load.kind === 'idle' || load.kind === 'not-set-up' ? null : load.username
   const title = username === null ? '/dev/null' : `/dev/null \u00b7 @${username}`
@@ -228,21 +245,23 @@ export function paneView(
   const freshness =
     load.kind === 'loading' ? 'loading\u2026' : fetchedAtMs === null ? '' : `updated ${relativeAge(fetchedAtMs, nowMs)}`
   const view = { title, freshness, hint: undefined, newReplies, commits }
+  const heldFor = heldSecondsLeft(notBeforeMs, nowMs)
+  const held = heldFor === undefined ? undefined : heldText(heldFor)
 
   switch (load.kind) {
     case 'idle':
-      return { ...view, message: IDLE_TEXT }
+      return { ...view, message: held ?? IDLE_TEXT }
     case 'not-set-up':
       return { ...view, message: NOT_SET_UP_TEXT }
     case 'loading':
       return { ...view, message: commits.length === 0 ? LOADING_TEXT : undefined }
     case 'ready':
-      return { ...view, message: commits.length === 0 ? EMPTY_TEXT : undefined }
+      return { ...view, message: commits.length === 0 ? EMPTY_TEXT : undefined, hint: held }
     case 'failed': {
       const { problem } = load
       const wait = problem.kind === 'status' ? problem.retryAfterSeconds : null
 
-      return { ...view, message: problemText(problem), hint: wait === null ? undefined : waitText(wait) }
+      return { ...view, message: problemText(problem), hint: wait === null ? held : waitText(wait) }
     }
     default: {
       const unknownLoad: never = load

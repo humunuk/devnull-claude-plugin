@@ -66,6 +66,13 @@ export const POSTING_USAGE: readonly string[] = [COMMIT_USAGE, REPLY_USAGE]
 
 export type PostingName = 'commit' | 'reply'
 
+/**
+ * What a post came to, with the link the command prints: built from the
+ * username setup saved and the commit id, and only when dev-null.sh posted
+ * under that username; undefined otherwise. The pane draws the PostResult.
+ */
+export type PostReport = PostResult & { link: string | undefined }
+
 export const COMMIT_EMPTY_TEXT = 'Nothing to post. Usage: /devnull commit <text>'
 
 export const REPLY_EMPTY_TEXT = 'Nothing to post. Usage: /devnull reply <hash or link> <text>'
@@ -94,6 +101,14 @@ export const SIGN_DID_NOT_FINISH_TEXT =
 export const BAD_SIGNATURE_TEXT = 'ssh-keygen printed something other than an SSH signature, so nothing was posted.'
 
 export const PENDING_TEXT = 'It is pending review: only you can see it until it is approved.'
+
+// Fixed words only: the username dev-null.sh answered with is its text, and a
+// command's text reaches the model (security rule 2), so it is not named here
+// and no link is built from it for the command.
+export const OTHER_ACCOUNT_TEXT = [
+  'dev-null.sh posted this under another account than the username /devnull setup saved.',
+  'Check which /dev/null account your key belongs to, and run /devnull setup again to save that username.',
+].join('\n')
 
 export const UNAUTHORIZED_TEXT = [
   'dev-null.sh did not accept the signature (401), so nothing was posted.',
@@ -165,10 +180,10 @@ export function registerPosting(on: On): void {
     if (name !== 'commit' && name !== 'reply') return next(e)
     if (!isTypedByPerson(e.origin)) return { text: notTypedText(name) }
 
-    const result = await postCommit(postingIo($, () => next.signal.aborted), name, rest)
-    if (result.committed !== null) await reloadPaneIfOpen($)
+    const report = await postCommit(postingIo($, () => next.signal.aborted), name, rest)
+    if (report.committed !== null) await reloadPaneIfOpen($)
 
-    return { text: postingText(result) }
+    return { text: postingText(report) }
   }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
 
   // The engine's rows are not on this event; the ones from plugins beneath
@@ -234,20 +249,18 @@ export async function runPosting(io: PostingIo, name: PostingName, rest: string)
   return postingText(await postCommit(io, name, rest))
 }
 
-/** A post's result as the command's answer: `Committed: <link>` first when it went through. */
-function postingText(result: PostResult): string {
-  const url = result.committed === null ? undefined : commitUrl(result.committed.username, result.committed.id)
-
-  return [...(url === undefined ? [] : [`Committed: ${url}`]), ...result.lines].join('\n')
+/** A post's report as the command's answer: `Committed: <link>` first when it went through under the saved username. */
+function postingText(report: PostReport): string {
+  return [...(report.link === undefined ? [] : [`Committed: ${report.link}`]), ...report.lines].join('\n')
 }
 
 /** Lines alone: nothing went through. */
-function notPosted(...lines: string[]): PostResult {
-  return { committed: null, lines }
+function notPosted(...lines: string[]): PostReport {
+  return { committed: null, lines, link: undefined }
 }
 
 /** What `/devnull commit` or `/devnull reply` with what followed it came to. */
-export async function postCommit(io: PostingIo, name: PostingName, rest: string): Promise<PostResult> {
+export async function postCommit(io: PostingIo, name: PostingName, rest: string): Promise<PostReport> {
   let replyTo: string | undefined
   let body: string
   switch (name) {
@@ -321,7 +334,7 @@ export async function postCommit(io: PostingIo, name: PostingName, rest: string)
   }
   const posted = postedResult(readPostAnswer(response), name, account)
 
-  return { committed: posted.committed, lines: [...posted.lines, ...cleanupNote] }
+  return { ...posted, lines: [...posted.lines, ...cleanupNote] }
 }
 
 async function readAgent(io: PostingIo): Promise<AgentList> {
@@ -416,16 +429,17 @@ async function succeeds(run: () => Promise<ProcessRunResult>): Promise<boolean> 
   }
 }
 
-function postedResult(outcome: PostOutcome, name: PostingName, account: Account): PostResult {
+function postedResult(outcome: PostOutcome, name: PostingName, account: Account): PostReport {
   switch (outcome.kind) {
     case 'committed': {
       const { username, id, isPending } = outcome.committed
       if (commitUrl(username, id) === undefined) return notPosted(unexpectedText(undefined, account.username))
+      const isSavedAccount = username === account.username
       const lines: string[] = []
+      if (!isSavedAccount) lines.push(OTHER_ACCOUNT_TEXT)
       if (isPending) lines.push(PENDING_TEXT)
-      if (username !== account.username) lines.push(otherUsernameText(username, account.username))
 
-      return { committed: { username, id }, lines }
+      return { committed: { username, id }, lines, link: isSavedAccount ? commitUrl(account.username, id) : undefined }
     }
     case 'unexpected-201':
       return notPosted(unexpectedText(201, account.username))
@@ -518,8 +532,4 @@ export function rateLimitedText(retryAfterSeconds: number | undefined): string {
   const when = retryAfterSeconds === undefined ? 'in a minute' : `in ${retryAfterSeconds} seconds`
 
   return `dev-null.sh takes 10 commits a minute, counting every way you post, so nothing was posted. Try again ${when}.`
-}
-
-export function otherUsernameText(postedAs: string, saved: string): string {
-  return `Note: dev-null.sh posted this as ${postedAs}, but /devnull setup saved the username ${saved}. Run /devnull setup again to save ${postedAs}.`
 }

@@ -15,7 +15,7 @@ import type { CommitSummary, FollowingRound } from '../../types'
 import { USERNAME } from './account'
 import { pollDelayMs, retryAfterSeconds } from './backoff'
 import { ORIGIN } from './links'
-import { NETWORK_TEXT, NOT_SET_UP_TEXT, drawnCommit, waitText } from './pane'
+import { NETWORK_TEXT, NOT_SET_UP_TEXT, drawnCommit, heldSecondsLeft, heldText, waitText } from './pane'
 import type { CommitsResponse, PaneCommit, PaneProblem } from './pane'
 import { newestFirst } from './recent'
 import { relativeAge } from './text'
@@ -331,12 +331,19 @@ export type FollowingView = {
   commits: FollowingCommit[]
 }
 
-/** The Following tab's content on `surface` for the round as it stands at `nowMs`. */
-export function followingView(state: FollowingState, nowMs: number, surface: RenderSurface): FollowingView {
+/**
+ * The Following tab's content on `surface` for the round as it stands at
+ * `nowMs`. With no round to draw, while the 429 hold (`notBeforeMs`) is in
+ * force, it says how long to wait: startRound starts nothing until then.
+ */
+export function followingView(state: FollowingState, nowMs: number, surface: RenderSurface, notBeforeMs = 0): FollowingView {
   const none = { freshness: '', wait: undefined, isProblem: false, notes: [], commits: [] }
   switch (state.kind) {
-    case 'idle':
-      return { ...none, message: FOLLOWING_IDLE_TEXT }
+    case 'idle': {
+      const heldFor = heldSecondsLeft(notBeforeMs, nowMs)
+
+      return { ...none, message: heldFor === undefined ? FOLLOWING_IDLE_TEXT : heldText(heldFor) }
+    }
     case 'not-set-up':
       return { ...none, message: NOT_SET_UP_TEXT }
     case 'loading': {

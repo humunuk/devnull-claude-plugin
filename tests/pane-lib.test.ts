@@ -5,6 +5,7 @@ import {
   LOADING_TEXT,
   IDLE_TEXT,
   LOAD_STALE_MS,
+  NETWORK_TEXT,
   NO_POST,
   PAGE_SIZE,
   POST_STALE_MS,
@@ -14,6 +15,7 @@ import {
   fetchedAtOf,
   finishLoad,
   finishPost,
+  heldText,
   isSending,
   newReplyRows,
   pageOf,
@@ -311,6 +313,22 @@ describe('the pane view', () => {
     expect(paneView(failed, kept, [], NOW, 'terminal').freshness).toBe('updated 1h')
     expect(paneView(failedLoad(USERNAME, { kind: 'network' }, NOW, [], null), kept, [], NOW, 'terminal').freshness).toBe('')
     expect(paneView(LOADING, kept, [], NOW, 'terminal').freshness).toBe('loading\u2026')
+  })
+
+  test('while the 429 hold is in force, says how long to wait, and keeps a page drawn', () => {
+    const until = NOW + 90_500
+    expect(paneView({ kind: 'idle' }, null, [], NOW, 'terminal', until)).toMatchObject({ message: heldText(91), hint: undefined })
+    const ready: PaneLoad = { kind: 'ready', username: USERNAME, page: [commitId(1)], fetchedAtMs: NOW }
+    const drawn = paneView(ready, recent([summary(1)]), [], NOW, 'terminal', until)
+    expect(drawn).toMatchObject({ message: undefined, hint: heldText(91) })
+    expect(drawn.commits.map(commit => commit.id)).toEqual([commitId(1)])
+    // A failure keeps its own line, with the wait under it.
+    const failed = failedLoad(USERNAME, { kind: 'network' }, NOW, [], null)
+    expect(paneView(failed, null, [], NOW, 'terminal', until)).toMatchObject({ message: NETWORK_TEXT, hint: heldText(91) })
+    // A load in flight still says it is loading; once the hold ends, nothing is said of it.
+    expect(paneView({ ...LOADING, page: [] }, null, [], NOW, 'terminal', until).message).toBe(LOADING_TEXT)
+    expect(paneView({ kind: 'idle' }, null, [], until, 'terminal', until).message).toBe(IDLE_TEXT)
+    expect(paneView(ready, recent([summary(1)]), [], until, 'terminal', until).hint).toBeUndefined()
   })
 })
 

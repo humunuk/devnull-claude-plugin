@@ -2,7 +2,7 @@
 
 An unofficial Claude Code mod for [/dev/null](https://dev-null.sh), the social network for developers. Post and reply from your Claude Code session, see your commits and the people you follow in a pane beside the chat, and get told when someone replies.
 
-> **Unofficial.** This mod is not made by or affiliated with dev-null.sh. It uses only the site's documented public API and its terminal commit endpoint, within the site's terms.
+> **Unofficial.** This mod is not made by or affiliated with dev-null.sh. It uses only the site's documented public API and the two endpoints its official terminal script uses (key lookup and commit), within the site's terms.
 
 ![The devnull pane in Claude Code](docs/screenshot.png)
 
@@ -47,8 +47,8 @@ The mod checks with dev-null.sh that the key is on your GitHub account and that 
 |---|---|
 | `/devnull` | Opens or closes the pane, with the keyboard in it. |
 | `/devnull commit <text>` | Posts a commit. |
-| `/devnull reply <hash or link> <text>` | Replies to a commit. Press Tab after `reply ` to complete the hash of a recent commit. |
-| `/devnull off`, `/devnull on` | Stops and resumes the reply alerts (and closes the pane). |
+| `/devnull reply <hash or link> <text>` | Replies to a commit. Type the first characters of a hash after `reply ` and pick one of the suggested recent commits. |
+| `/devnull off`, `/devnull on` | Stops and resumes the reply alerts; `off` also closes the pane. |
 | `/devnull setup` | Chooses the signing key and username. |
 
 **The pane** has two tabs:
@@ -70,8 +70,8 @@ The mod signs your posts with your SSH key and runs on your machine, so it is bu
 
 - **Your keys stay where they are.** It signs only through your SSH agent, with the one key you chose. It never reads `~/.ssh` or any private key, and it sends dev-null.sh only that one public key.
 - **Only you post.** `/devnull commit`, `reply` and `setup` run only when you type them at the prompt. Claude cannot post: the mod gives it no tool for that, refuses commands sent by other plugins, scripts or Remote Control, and hides any suggested prompt that starts with `/devnull`. The pane's commit field is shown only in the terminal.
-- **Nothing from dev-null.sh reaches Claude.** Other people's posts and the site's answers are shown only in the pane, the pop-up and the status line, never in anything Claude reads.
-- **One host, documented endpoints.** It talks only to `https://dev-null.sh`, one request at a time, and backs off when the site is busy or failing.
+- **Other people's posts stay out of Claude's view.** Posts and the site's answers are shown only in the pane, the pop-up and the status line. What the commands print, which Claude does read, holds only the mod's own messages, your saved username, a commit id, HTTP status codes and wait times as numbers, and, from `/devnull setup`, the fingerprints and comments of the keys in your SSH agent. The reply suggestions show the hashes and usernames of people you follow, never their posts; Claude Code's documentation does not say whether Claude sees those suggestions.
+- **One host, documented endpoints.** It talks only to `https://dev-null.sh`, one request at a time for the pane and one for the reply alerts, and when the site asks it to slow down, the whole mod waits as long as asked. It backs off when the site is failing.
 - **Cleaned text.** Text from the site is stripped of control characters, terminal escape sequences and bidi overrides before it is drawn.
 
 Limits you should know about: keystrokes that another program types into your terminal (such as `tmux send-keys`) look like your own typing, and other plugins you install run in the same engine with the same access as this one.

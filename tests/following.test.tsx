@@ -15,14 +15,16 @@ import {
   roundWaitText,
 } from '../hooks/lib/following'
 import type { FollowingState } from '../hooks/lib/following'
-import { NETWORK_TEXT, NOT_SET_UP_TEXT, waitText } from '../hooks/lib/pane'
+import { NETWORK_TEXT, NOT_SET_UP_TEXT, heldText, waitText } from '../hooks/lib/pane'
 import { INPUT_LABEL } from '../hooks/pane'
 import { OFF_TEXT } from '../hooks/alerts'
+import { runRound } from '../hooks/pane-core'
+import type { RoundIo } from '../hooks/pane-core'
 import { completionRows } from '../hooks/posting'
 import type { RecentCommits } from '../types'
 import { USERNAME, apiCommit, apiList, commitId, shortHashOf } from './fixtures/commits'
 import { FOLLOWING_URL, apiCommitBy, apiFollowList, apiPerson, commitsUrlOf, friend } from './fixtures/following'
-import { devnull } from './helpers'
+import { devnull, watchHold } from './helpers'
 import { ACCOUNT, NOW, RULE, SURFACES, composeRowsOf, linkOn, listRowsOf, mountPane, paneWorld, toggle } from './helpers-pane'
 import type { Answer, PaneWorld } from './helpers-pane'
 
@@ -775,6 +777,83 @@ describe('a 429 holds the whole pane back', () => {
     await world.clock.advance(1000)
     await press($, world, 'refresh')
     expect(urls(world).slice(3)).toEqual([LIST_URL])
+  })
+
+  for (const surface of SURFACES) {
+    test(`a hold set while requests wait in the lane stops them: the round ends cut, the queued load is not sent, on ${surface}`, async ($, on) => {
+      const hold = watchHold(on)
+      const world = followingWorld(on, [1, 2].map(friend), { [friend(1)]: 'held' })
+      await start($)
+      await openPane($, world)
+      const ui = await mountPane($, surface)
+      const pressed = ui.press({ key: 'tab-following' })
+      await world.clock.settle()
+      await ui.press({ key: 'tab-mine' })
+      const refreshed = ui.press({ key: 'refresh' })
+      await world.clock.settle()
+      // Friend 1's list is out, and Mine's load waits behind it in the lane.
+      expect(urls(world)).toEqual([LIST_URL, FOLLOWING_URL, commitsUrlOf(friend(1))])
+
+      // A poll meets a 429 while it is out.
+      hold.set(NOW + 120_000)
+      world.release(ok([apiCommitBy(friend(1), 11, { body: 'arrived before' })]))
+      await pressed
+      await refreshed
+      await world.clock.settle()
+      expect(urls(world)).toEqual([LIST_URL, FOLLOWING_URL, commitsUrlOf(friend(1))])
+      // Mine keeps its page, with the wait under the header and no failure.
+      const mine = listRowsOf(await ui.drawn())
+      expect(mine).toContain('my own commit')
+      expect(mine).toContain(heldText(120))
+      expect(mine).not.toContain(NETWORK_TEXT)
+      await ui.unmount()
+
+      // The round drew what arrived, cut.
+      await press($, world, 'tab-following', surface)
+      const drawn = await rows($, surface)
+      expect(drawn).toContain(FOLLOWING_CUT_TEXT)
+      expect(drawn).toContain('arrived before')
+      expect(world.requests).toHaveLength(3)
+    })
+  }
+
+  test('a hold that comes into force mid-round stops it before the next request, lane or not', async () => {
+    const people = [1, 2, 3].map(friend)
+    const texts: Record<string, string> = {
+      [FOLLOWING_URL]: JSON.stringify(apiFollowList(people.map(name => apiPerson(name)))),
+      [commitsUrlOf(friend(1))]: JSON.stringify(apiList([apiCommitBy(friend(1), 11)])),
+    }
+    const asked: string[] = []
+    let state: FollowingState = { kind: 'idle' }
+    let notBeforeMs = 0
+    const io: RoundIo = {
+      now: async () => NOW,
+      newToken: () => 'round-1',
+      readAccount: async () => ACCOUNT,
+      fetchList: async url => {
+        asked.push(url)
+        // A poll meets a 429 while friend 1's list is out.
+        if (url === commitsUrlOf(friend(1))) notBeforeMs = NOW + 120_000
+
+        return { status: 200, ok: true, headers: {}, text: texts[url] ?? JSON.stringify(apiList([])) }
+      },
+      changeRound: async change => {
+        state = change(state)
+
+        return state
+      },
+      readNotBefore: async () => notBeforeMs,
+      holdUntil: async atMs => {
+        notBeforeMs = Math.max(notBeforeMs, atMs)
+      },
+      isStopped: () => false,
+    }
+
+    await runRound(io, 'show', Promise.resolve())
+
+    expect(asked).toEqual([FOLLOWING_URL, commitsUrlOf(friend(1))])
+    expect(state).toMatchObject({ kind: 'ended', last: { outcome: { kind: 'list', people: 3, failed: 0, isCut: true } } })
+    expect(followingCommitsOf(state).map(commit => commit.id)).toEqual([commitId(11)])
   })
 
   test("after Mine's 429, the round does not start until Retry-After has passed", async ($, on) => {
