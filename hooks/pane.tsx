@@ -96,12 +96,6 @@ export function registerPane(on: On): void {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('session.end', ($, e, next) => {
-    stopTicker(ticker)
-
-    return next(e)
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { Box, Button, Link, Text } = $.ui.resolve(e)
     // A pane drawn with no timer in this environment is one a hot reload left
@@ -148,6 +142,15 @@ export function registerPane(on: On): void {
 
 async function isPaneOpen($: EngineInterface): Promise<boolean> {
   return (await $.ui.panes()).some(pane => pane.id === PANE_ID)
+}
+
+/**
+ * Stops the redraw timer when the session ends (rule 8). register.tsx holds
+ * the mod's one `session.end` hook: validate allows a single unmatched hook
+ * per event across the mod.
+ */
+export function endPane(): void {
+  stopTicker(ticker)
 }
 
 /** Starts the redraw timer, in place of any this environment runs already. */

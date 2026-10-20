@@ -33,6 +33,32 @@ export type RecentCommits = {
   commits: CommitSummary[]
 }
 
+/** A commit of the person's with replies they have not seen. See hooks/lib/alerts.ts. */
+export type ReplyAlert = {
+  /** A lowercase UUID. */
+  id: string
+  /** 7 to 12 lowercase hex characters, the end of the id. */
+  shortHash: string
+  /** The author's /dev/null username, for the link. */
+  username: string
+  /** The commit's `replies_count` now. */
+  repliesCount: number
+  /** How many of those the person has not seen, at least 1. */
+  newReplies: number
+}
+
+/**
+ * The reply alerts' session state: what the band and the status line show,
+ * and what the poller needs to go on politely after a hot reload.
+ */
+export type ReplyAlerts = {
+  alerts: ReplyAlert[]
+  /** Polls that failed in a row, for back-off. */
+  failures: number
+  /** When the next poll is due, in `$.clock.now()` milliseconds; null before the first. */
+  nextPollAtMs: number | null
+}
+
 // Written out in place, not as a named type: `claude plugin validate` reads
 // the keys from this declaration itself.
 declare module 'claude-code' {
@@ -64,6 +90,8 @@ declare module 'claude-code' {
               | { kind: 'local' }
             retryAtMs: number | null
           }
+      /** The reply alerts; see hooks/alerts.tsx. */
+      replyAlerts: ReplyAlerts
     }
   }
 }

@@ -49,10 +49,12 @@ export function paneWorld(
 
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  // The store as the pane reads it: setup's account, or nothing.
+  // The store as the pane reads it: setup's account, or nothing. Reply alerts
+  // are off, so their poller (hooks/alerts.tsx) sends no requests of its own.
   let account: unknown = options.account
   on('store.get', (_, e) => {
     if (options.isStoreBroken === true) return { deny: 'disk on fire at /home/someone' }
+    if (e.key === 'alertsOn') return { value: false }
 
     return { value: e.key === 'account' ? account : undefined }
   })

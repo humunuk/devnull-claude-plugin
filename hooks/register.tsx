@@ -5,12 +5,13 @@
 
 import type { Register } from 'claude-code'
 
+import { endAlerts, registerAlerts } from './alerts'
 import { registerUsage } from './commands'
-import { registerPane } from './pane'
+import { endPane, registerPane } from './pane'
 import { registerPosting } from './posting'
 import { registerSetup } from './setup'
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'devnull',
@@ -22,8 +23,18 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // The mod's one `session.end` hook (validate allows a single unmatched hook
+  // per event across the mod): each feature stops what it runs.
+  on('session.end', ($, e, next) => {
+    endPane()
+    endAlerts(e.reason)
+
+    return next(e)
+  })
+
   registerSetup(on)
   registerPosting(on)
   registerPane(on)
+  registerAlerts(on, options)
   registerUsage(on)
 }
