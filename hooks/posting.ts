@@ -1,12 +1,14 @@
 // `/devnull commit <text>` and `/devnull reply <hash or link> <text>`: sign the
 // commit through the SSH agent with the key setup chose, and post it. The
 // command hook only checks who asked and hands `runPosting` the calls on `$`
-// it may make. The same module completes `/devnull` subcommands and reply
-// hashes in the prompt box, and drops every proposed prompt that would run
-// `/devnull`, so a suggestion the model wrote is never a Tab and an Enter away
-// from a post (security rule 1).
+// it may make; the pane's input posts through the same `postCommit`. After a
+// commit, an open pane loads its list again. The same module completes
+// `/devnull` subcommands and reply hashes in the prompt box, and drops every
+// proposed prompt that would run `/devnull`, so a suggestion the model wrote
+// is never a Tab and an Enter away from a post (security rule 1).
 
 import type {
+  EngineInterface,
   HttpResponse,
   On,
   ProcessRunResult,
@@ -40,9 +42,10 @@ import {
   signArgv,
   signingKeyPath,
 } from './lib/posting'
-import type { PostOutcome } from './lib/posting'
+import type { PostOutcome, PostResult } from './lib/posting'
 import { matchHashes } from './lib/recent'
 import { readSignature } from './lib/signature'
+import { reloadPaneIfOpen } from './pane-core'
 import { readRecent } from './recent'
 import { SSH_ADD_FAILED_TEXT } from './setup'
 
@@ -113,26 +116,36 @@ export type PostingIo = {
   isAborted: () => boolean
 }
 
+/**
+ * The calls on `$` a post makes, for the hook that owns that `$`: the command
+ * run's, or the pane's drawing (its input). `isAborted` says whether the one
+ * who asked gave up; the pane's input has no signal for that.
+ */
+export function postingIo($: EngineInterface, isAborted: () => boolean): PostingIo {
+  return {
+    readAccount: () => $.store.get(ACCOUNT_KEY),
+    listAgentKeys: () => $.process.run(SSH_ADD_LIST, { timeoutMs: SSH_ADD_TIMEOUT_MS }),
+    makeTempDir: () => $.process.run(MKTEMP_DIR, { timeoutMs: FILE_COMMAND_TIMEOUT_MS }),
+    writeKey: (path, publicKeyLine) => $.fs.write(path, `${publicKeyLine}\n`),
+    sign: (keyPath, payload) => $.process.run(signArgv(keyPath), { stdin: payload, timeoutMs: SIGN_TIMEOUT_MS }),
+    removeFile: path => $.process.run(removeFileArgv(path), { timeoutMs: FILE_COMMAND_TIMEOUT_MS }),
+    removeDir: dir => $.process.run(removeDirArgv(dir), { timeoutMs: FILE_COMMAND_TIMEOUT_MS }),
+    nowMs: () => $.clock.now(),
+    send: (payload, signature) => $.http.fetch(COMMITS_URL, commitRequest(payload, signature)),
+    isAborted,
+  }
+}
+
 export function registerPosting(on: On): void {
   on('command.run', { command: 'devnull' }, async ($, e, next) => {
     const { name, rest } = splitSubcommand(e.args)
     if (name !== 'commit' && name !== 'reply') return next(e)
     if (!isTypedByPerson(e.origin)) return { text: notTypedText(name) }
 
-    const io: PostingIo = {
-      readAccount: () => $.store.get(ACCOUNT_KEY),
-      listAgentKeys: () => $.process.run(SSH_ADD_LIST, { timeoutMs: SSH_ADD_TIMEOUT_MS }),
-      makeTempDir: () => $.process.run(MKTEMP_DIR, { timeoutMs: FILE_COMMAND_TIMEOUT_MS }),
-      writeKey: (path, publicKeyLine) => $.fs.write(path, `${publicKeyLine}\n`),
-      sign: (keyPath, payload) => $.process.run(signArgv(keyPath), { stdin: payload, timeoutMs: SIGN_TIMEOUT_MS }),
-      removeFile: path => $.process.run(removeFileArgv(path), { timeoutMs: FILE_COMMAND_TIMEOUT_MS }),
-      removeDir: dir => $.process.run(removeDirArgv(dir), { timeoutMs: FILE_COMMAND_TIMEOUT_MS }),
-      nowMs: () => $.clock.now(),
-      send: (payload, signature) => $.http.fetch(COMMITS_URL, commitRequest(payload, signature)),
-      isAborted: () => next.signal.aborted,
-    }
+    const result = await postCommit(postingIo($, () => next.signal.aborted), name, rest)
+    if (result.committed !== null) await reloadPaneIfOpen($)
 
-    return { text: await runPosting(io, name, rest) }
+    return { text: postingText(result) }
   }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
 
   // The engine's rows are not on this event; the ones from plugins beneath
@@ -183,6 +196,23 @@ export async function completionRows(
 
 /** The answer to `/devnull commit` or `/devnull reply` and what followed it. */
 export async function runPosting(io: PostingIo, name: PostingName, rest: string): Promise<string> {
+  return postingText(await postCommit(io, name, rest))
+}
+
+/** A post's result as the command's answer: `Committed: <link>` first when it went through. */
+function postingText(result: PostResult): string {
+  const url = result.committed === null ? undefined : commitUrl(result.committed.username, result.committed.id)
+
+  return [...(url === undefined ? [] : [`Committed: ${url}`]), ...result.lines].join('\n')
+}
+
+/** Lines alone: nothing went through. */
+function notPosted(...lines: string[]): PostResult {
+  return { committed: null, lines }
+}
+
+/** What `/devnull commit` or `/devnull reply` with what followed it came to. */
+export async function postCommit(io: PostingIo, name: PostingName, rest: string): Promise<PostResult> {
   let replyTo: string | undefined
   let body: string
   switch (name) {
@@ -191,9 +221,9 @@ export async function runPosting(io: PostingIo, name: PostingName, rest: string)
       break
     case 'reply': {
       const reply = splitSubcommand(rest)
-      if (reply.name === '') return REPLY_EMPTY_TEXT
+      if (reply.name === '') return notPosted(REPLY_EMPTY_TEXT)
       replyTo = parseReplyReference(reply.name)
-      if (replyTo === undefined) return BAD_REFERENCE_TEXT
+      if (replyTo === undefined) return notPosted(BAD_REFERENCE_TEXT)
       body = reply.rest
       break
     }
@@ -209,9 +239,9 @@ export async function runPosting(io: PostingIo, name: PostingName, rest: string)
     case 'ok':
       break
     case 'empty':
-      return name === 'commit' ? COMMIT_EMPTY_TEXT : REPLY_EMPTY_TEXT
+      return notPosted(name === 'commit' ? COMMIT_EMPTY_TEXT : REPLY_EMPTY_TEXT)
     case 'too-long':
-      return tooLongText(bodyCheck.length)
+      return notPosted(tooLongText(bodyCheck.length))
     default: {
       const unknownCheck: never = bodyCheck
 
@@ -220,13 +250,13 @@ export async function runPosting(io: PostingIo, name: PostingName, rest: string)
   }
 
   const account = parseAccount(await io.readAccount())
-  if (account === undefined) return NO_ACCOUNT_TEXT
+  if (account === undefined) return notPosted(NO_ACCOUNT_TEXT)
 
   const agent = await readAgent(io)
-  if (agent.kind === 'unreachable') return AGENT_UNREACHABLE_TEXT
-  if (agent.kind === 'failed') return SSH_ADD_FAILED_TEXT
+  if (agent.kind === 'unreachable') return notPosted(AGENT_UNREACHABLE_TEXT)
+  if (agent.kind === 'failed') return notPosted(SSH_ADD_FAILED_TEXT)
   const key = agent.kind === 'keys' ? agent.keys.find(one => one.fingerprint === account.fingerprint) : undefined
-  if (key === undefined) return keyNotInAgentText(account.fingerprint)
+  if (key === undefined) return notPosted(keyNotInAgentText(account.fingerprint))
 
   const payload = buildPayload({
     unixSeconds: Math.floor((await io.nowMs()) / 1000),
@@ -237,7 +267,7 @@ export async function runPosting(io: PostingIo, name: PostingName, rest: string)
 
   // Not even asking the agent once the run was abandoned: a key added with
   // `ssh-add -c` would show its confirmation for a post nobody wants.
-  if (io.isAborted()) return CANCELLED_TEXT
+  if (io.isAborted()) return notPosted(CANCELLED_TEXT)
 
   const signing = await signPayload(io, key, payload)
   const cleanupNote = signing.leftBehind === undefined ? [] : [leftBehindText(signing.leftBehind)]
@@ -245,17 +275,18 @@ export async function runPosting(io: PostingIo, name: PostingName, rest: string)
   // time must not end in a post. Next.signal aborts when the person interrupts
   // (or a hook above settled first); the dispatch has then moved on, so this
   // text may never be shown, but nothing is sent.
-  if (io.isAborted()) return [CANCELLED_TEXT, ...cleanupNote].join('\n')
-  if (signing.result.kind !== 'signed') return [signFailedText(signing.result), ...cleanupNote].join('\n')
+  if (io.isAborted()) return notPosted(CANCELLED_TEXT, ...cleanupNote)
+  if (signing.result.kind !== 'signed') return notPosted(signFailedText(signing.result), ...cleanupNote)
 
   let response: HttpResponse
   try {
     response = await io.send(payload, signing.result.signature)
   } catch {
-    return [unreachableText(account.username), ...cleanupNote].join('\n')
+    return notPosted(unreachableText(account.username), ...cleanupNote)
   }
+  const posted = postedResult(readPostAnswer(response), name, account)
 
-  return [...postedText(readPostAnswer(response), name, account), ...cleanupNote].join('\n')
+  return { committed: posted.committed, lines: [...posted.lines, ...cleanupNote] }
 }
 
 async function readAgent(io: PostingIo): Promise<AgentList> {
@@ -350,32 +381,31 @@ async function succeeds(run: () => Promise<ProcessRunResult>): Promise<boolean> 
   }
 }
 
-function postedText(outcome: PostOutcome, name: PostingName, account: Account): string[] {
+function postedResult(outcome: PostOutcome, name: PostingName, account: Account): PostResult {
   switch (outcome.kind) {
     case 'committed': {
       const { username, id, isPending } = outcome.committed
-      const url = commitUrl(username, id)
-      if (url === undefined) return [unexpectedText(undefined, account.username)]
-      const lines = [`Committed: ${url}`]
+      if (commitUrl(username, id) === undefined) return notPosted(unexpectedText(undefined, account.username))
+      const lines: string[] = []
       if (isPending) lines.push(PENDING_TEXT)
       if (username !== account.username) lines.push(otherUsernameText(username, account.username))
 
-      return lines
+      return { committed: { username, id }, lines }
     }
     case 'unexpected-201':
-      return [unexpectedText(201, account.username)]
+      return notPosted(unexpectedText(201, account.username))
     case 'unauthorized':
-      return [UNAUTHORIZED_TEXT]
+      return notPosted(UNAUTHORIZED_TEXT)
     case 'not-found':
-      return [NOT_FOUND_TEXT]
+      return notPosted(NOT_FOUND_TEXT)
     case 'refused':
-      return [name === 'commit' ? REFUSED_COMMIT_TEXT : REFUSED_REPLY_TEXT]
+      return notPosted(name === 'commit' ? REFUSED_COMMIT_TEXT : REFUSED_REPLY_TEXT)
     case 'rate-limited':
-      return [rateLimitedText(outcome.retryAfterSeconds)]
+      return notPosted(rateLimitedText(outcome.retryAfterSeconds))
     case 'server-error':
-      return [serverErrorText(outcome.status, account.username)]
+      return notPosted(serverErrorText(outcome.status, account.username))
     case 'other':
-      return [unexpectedText(outcome.status, account.username)]
+      return notPosted(unexpectedText(outcome.status, account.username))
     default: {
       const unknownOutcome: never = outcome
 

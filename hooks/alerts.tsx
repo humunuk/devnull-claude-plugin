@@ -1,7 +1,9 @@
 // Reply alerts: while an account is set up and alerts are on, poll the
 // person's newest commits and replies, and when a `replies_count` rises show
 // it in the band above the prompt, the status line and a toast.
-// `/devnull off` and `/devnull on` stop and resume it, kept in `$.store`.
+// `/devnull off` and `/devnull on` stop and resume it, kept in `$.store`;
+// `/devnull off` also closes the pane. The pane reads the alerts on show
+// through readReplyAlerts, for its `+N new` marks.
 //
 // What is compared and kept is pure, in lib/alerts.ts. This module holds the
 // poller, the band and the two subcommands. Every call on `$` goes through an
@@ -18,9 +20,9 @@
 // (what was seen, and what was toasted) is in the seen record in `$.store`.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, HttpResponse, On, PluginOptions, SessionEndReason, Timer } from 'claude-code'
+import type { EngineInterface, HttpResponse, On, PluginOptions, SessionEndReason, StateDollar, Timer } from 'claude-code'
 
-import type { CommitSummary, ReplyAlerts } from '../types'
+import type { CommitSummary, ReplyAlert, ReplyAlerts } from '../types'
 import { ACCOUNT_KEY, parseAccount } from './lib/account'
 import {
   ALERTS_ON_KEY,
@@ -40,11 +42,12 @@ import {
 import type { ListResult } from './lib/alerts'
 import { pollDelayMs } from './lib/backoff'
 import { FAILED_TEXT, isTypedByPerson, notTypedText, splitSubcommand } from './lib/command'
-import { commitUrl } from './lib/links'
+import { commitLink } from './lib/links'
+import { closePane } from './pane-core'
 import { storeRecent } from './recent'
 
 const ON_USAGE = '/devnull on                       check for new replies again (the default)'
-const OFF_USAGE = '/devnull off                      stop checking for new replies'
+const OFF_USAGE = '/devnull off                      stop checking for new replies, and close the pane'
 
 export const ALERTS_USAGE: readonly string[] = [ON_USAGE, OFF_USAGE]
 
@@ -60,6 +63,8 @@ export const EXTRA_WORDS_TEXT = '/devnull on and /devnull off take nothing after
 
 export const DISMISS_FAILED_TEXT = 'Could not save that you have seen these replies. Press d to try again.'
 
+export const PANE_NOT_CLOSED_TEXT = 'The /dev/null pane could not be closed: /devnull closes it.'
+
 /** The interval setting in `plugin.json`'s `userConfig`. */
 export const INTERVAL_OPTION = 'replyCheckSeconds'
 
@@ -69,6 +74,11 @@ export const BAND_ROWS_MAX = 5
 const NO_ALERTS: ReplyAlerts = { alerts: [], failures: 0, nextPollAtMs: null }
 
 const ALERTS = atom({ plugin: 'devnull', key: 'replyAlerts' } as const, NO_ALERTS)
+
+/** The alerts on show now; a drawing that reads them is drawn again when they change. */
+export async function readReplyAlerts($: StateDollar): Promise<ReplyAlert[]> {
+  return (await read($, ALERTS)).alerts
+}
 
 /** What the alerts may do outside the mod, each bound to one fixed call on `$`. */
 export type AlertsIo = {
@@ -156,8 +166,11 @@ export function registerAlerts(on: On, options: PluginOptions): void {
     const io = alertsIo($)
     if (name === 'on') return { text: await turnOn(io) }
     const text = await turnOff(io)
-    // The seam for the pane: `/devnull off` also closes the pane. That is the
-    // pane's to do, here, once alerts have stopped.
+    try {
+      await closePane($)
+    } catch {
+      return { text: `${text}\n${PANE_NOT_CLOSED_TEXT}` }
+    }
 
     return { text }
   }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
@@ -174,7 +187,7 @@ export function registerAlerts(on: On, options: PluginOptions): void {
     const dismissButton = <Button key="dismiss" label="dismiss" hotkey="d" onPress={() => dismiss(io)} />
 
     const rows = shown.map((alert, index) => {
-      const url = commitUrl(alert.username, alert.id)
+      const url = commitLink(alert.username, alert.id, e.surface)
       const isLast = index === shown.length - 1 && hidden === 0
 
       return (

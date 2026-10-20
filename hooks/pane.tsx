@@ -1,44 +1,45 @@
 // The pane: bare `/devnull` opens it, or closes it when it is open. Every
-// open loads the person's newest commits into the session's recent list
-// (hooks/recent.ts), which the pane draws and `/devnull reply` completes from.
-// Where the load stands lives in `$.state`, so a hot reload keeps it.
+// open loads the person's newest commits (hooks/pane-core.ts), which the pane
+// draws in a `git log` style with the reply alerts' `+N new` marks.
 //
-// The engine keeps the record of open panes: the person may close this one
-// with its close mark or ctrl+x x, so the toggle asks `$.ui.panes()` instead of
-// remembering what it did last.
-//
-// The ages drawn are relative to now, so while the pane is open a timer redraws
-// it once a minute. The timer lives in a module variable, not `$.state` (it is
-// no value): a hot reload drops the old environment's timers along with the
-// variable (reference.md: "the previous environment's timers are dropped"),
-// and the next drawing of a pane still open starts one again. It stops on
-// `/devnull`'s close, on the person's close (`ui.close`), at the first tick
-// that finds the pane gone, and at `session.end` (rule 8).
+// Under a rule at the bottom, the input: Enter posts a new commit through the
+// same postCommit `/devnull commit` uses, signed by the person's SSH agent.
+// It is drawn only on the terminal surface, and a submit from any other
+// surface is refused (security rule 1): a client attached over the session
+// protocol declares its own surface ("a rendering fact and not a trust
+// signal", RenderInputOf.surface) but can never name `terminal`, so only the
+// person's own local session posts. An Input's handler gets the
+// text and the event, no `$` and no abort signal of its own (InputProps,
+// UiInputArgument): it uses the `$` of the drawing that made it, as the
+// refresh button does, and a post from it cannot be interrupted. One post is
+// in flight at a time, and the field is not drawn meanwhile.
 //
 // Room is left in the drawing for what later units add: the tab row under the
-// header, a `+N new` mark on a commit's line, and the rule and input at the
-// bottom (security rule 1: only on the terminal and desktop surfaces).
+// header.
 
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, HttpResponse, On, Timer } from 'claude-code'
+import type { EngineInterface, On, RenderSurface, UiInputArgument } from 'claude-code'
 
-import type { CommitSummary } from '../types'
-import { ACCOUNT_KEY, parseAccount } from './lib/account'
 import { FAILED_TEXT, splitSubcommand } from './lib/command'
+import { checkBody } from './lib/payload'
 import {
-  COMMITS_REQUEST,
-  failedLoad,
-  finishLoad,
-  pageOf,
+  COMMITTED_TEXT,
+  NO_POST,
+  PANE_EMPTY_TEXT,
+  POSTING_TEXT,
+  POST_FAILED_TEXT,
+  finishPost,
+  newRepliesText,
   paneView,
-  readCommitsAnswer,
-  startLoad,
-  userCommitsUrl,
+  postView,
+  refusePost,
+  startPost,
 } from './lib/pane'
-import type { CommitsAnswer, PaneLoad } from './lib/pane'
-import { readRecent, storeRecent } from './recent'
-
-export const PANE_ID = 'devnull'
+import type { PostResult } from './lib/posting'
+import { readReplyAlerts } from './alerts'
+import { PANE_ID, isPaneOpen, keepTicking, load, paneClosed, readLoad, reloadPaneIfOpen, shutPane, startTicker } from './pane-core'
+import { postCommit, postingIo, tooLongText } from './posting'
+import { readRecent } from './recent'
 
 const PANE_TITLE = '/dev/null'
 
@@ -46,27 +47,26 @@ export const PANE_USAGE: readonly string[] = ['/devnull                         
 
 export const NOT_PLACED_TEXT = 'The /dev/null pane is open, and shows once a screen that draws panes is attached.'
 
-export const LOAD_FAILED_TOAST = '/devnull could not load your commits: Claude Code refused a step.'
+export const POST_LOST_TOAST =
+  '/devnull could not show what became of your post: Claude Code refused a step. Check your profile on dev-null.sh before posting again.'
 
-const PANE_REF = { plugin: 'devnull', key: 'pane' } as const
+export const INPUT_LABEL = 'commit \u203a'
 
-const LOAD = atom(PANE_REF, { kind: 'idle' })
+const INPUT_PLACEHOLDER = 'a new commit; Enter posts it'
 
-/** How often an open pane is redrawn, so the ages it shows move on. */
-export const TICK_MS = 60_000
+/** The rule above the input is drawn at most this wide, whatever the pane's width. */
+const RULE_MAX = 400
 
-const TICK_FAILED_LOG = 'devnull: the pane stopped redrawing its ages: listing the open panes failed'
+const POST = atom({ plugin: 'devnull', key: 'panePost' } as const, NO_POST)
 
-let ticker: Timer | undefined
-
-/** What a load may do outside the mod, each bound to one fixed call on `$`. */
-export type PaneIo = {
-  now: () => Promise<number>
-  newToken: () => string
-  readAccount: () => Promise<unknown>
-  fetchCommits: (url: string) => Promise<HttpResponse>
-  storeCommits: (username: string, commits: readonly CommitSummary[], nowMs: number) => Promise<unknown>
-  changeLoad: (change: (load: PaneLoad) => PaneLoad) => Promise<PaneLoad>
+/**
+ * Whether `e` (a drawing, or a submit) is on the surface the input, and
+ * anything else that posts, is drawn on: the terminal alone. A remote client
+ * names its own surface and can never name `terminal`; an absent one is
+ * `desktop`.
+ */
+export function isPostingSurface<E extends { surface: RenderSurface }>(e: E): e is Extract<E, { surface: 'terminal' }> {
+  return e.surface === 'terminal'
 }
 
 export function registerPane(on: On): void {
@@ -75,8 +75,7 @@ export function registerPane(on: On): void {
 
     // Opening or closing a pane posts nothing, so any origin may toggle it.
     if (await isPaneOpen($)) {
-      stopTicker(ticker)
-      await $.ui.close({ id: PANE_ID })
+      await shutPane($)
 
       return {}
     }
@@ -91,21 +90,20 @@ export function registerPane(on: On): void {
   }).catch(($, e, next) => (next.called ? next(e) : { text: FAILED_TEXT }))
 
   on('ui.close', { id: PANE_ID }, ($, e, next) => {
-    stopTicker(ticker)
+    paneClosed()
 
     return next(e)
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
     const { Box, Button, Link, Text } = $.ui.resolve(e)
-    // A pane drawn with no timer in this environment is one a hot reload left
-    // open: the old environment's timer went with it.
-    if (ticker === undefined) startTicker($)
-    const loadNow = await read($, LOAD)
-    const view = paneView(loadNow, await readRecent($), await $.clock.now())
+    keepTicking($)
+    const loadNow = await readLoad($)
+    const nowMs = await $.clock.now()
+    const view = paneView(loadNow, await readRecent($), await readReplyAlerts($), nowMs, e.surface)
 
-    return (
-      <Box flexDirection="column">
+    const list = (
+      <Box key="list" flexDirection="column">
         <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
           <Text weight="bold" wrap="truncate-end">
             {view.title}
@@ -124,6 +122,12 @@ export function registerPane(on: On): void {
             <Text wrap="truncate-end">
               <Text color="warning">{commit.hash}</Text>
               <Text color="subtle"> {commit.meta}</Text>
+              {commit.newReplies > 0 && (
+                <Text color="success" weight="bold">
+                  {' '}
+                  {newRepliesText(commit.newReplies)}
+                </Text>
+              )}
             </Text>
             {commit.lines.map(line => (
               <Text wrap="truncate-end">{line === '' ? ' ' : line}</Text>
@@ -137,111 +141,98 @@ export function registerPane(on: On): void {
         ))}
       </Box>
     )
-  })
-}
+    if (!isPostingSurface(e)) return list
 
-async function isPaneOpen($: EngineInterface): Promise<boolean> {
-  return (await $.ui.panes()).some(pane => pane.id === PANE_ID)
-}
-
-/**
- * Stops the redraw timer when the session ends (rule 8). register.tsx holds
- * the mod's one `session.end` hook: validate allows a single unmatched hook
- * per event across the mod.
- */
-export function endPane(): void {
-  stopTicker(ticker)
-}
-
-/** Starts the redraw timer, in place of any this environment runs already. */
-function startTicker($: EngineInterface): void {
-  stopTicker(ticker)
-  const own = $.clock.every(TICK_MS, () => {
-    void tick($, own)
-  })
-  ticker = own
-}
-
-/** Stops `timer`, and forgets it when it is the current one. */
-function stopTicker(timer: Timer | undefined): void {
-  timer?.cancel()
-  if (ticker === timer) ticker = undefined
-}
-
-/** Redraws the pane while it is open; a tick that finds it closed stops its timer. */
-async function tick($: EngineInterface, own: Timer): Promise<void> {
-  try {
-    if (await isPaneOpen($)) $.ui.invalidate('ui.render')
-    else stopTicker(own)
-  } catch {
-    stopTicker(own)
-    $.ui.log(TICK_FAILED_LOG, { to: 'debug' })
-  }
-}
-
-/** Starts a load with this `$`; never rejects, and says so when it could not even record its failure. */
-async function load($: EngineInterface): Promise<void> {
-  const io: PaneIo = {
-    now: () => $.clock.now(),
-    newToken: () => crypto.randomUUID(),
-    readAccount: () => $.store.get(ACCOUNT_KEY),
-    fetchCommits: url => $.http.fetch(url, COMMITS_REQUEST),
-    storeCommits: (username, commits, nowMs) => storeRecent($, username, commits, nowMs),
-    changeLoad: change => update($, LOAD, change),
-  }
-
-  try {
-    await runLoad(io)
-  } catch {
-    $.ui.toast(LOAD_FAILED_TOAST)
-  }
-}
-
-/**
- * One load of the person's newest commits: nothing while another is in flight
- * or dev-null.sh asked to wait; else the list is fetched, checked, kept in
- * the recent list, and the load marked ready or failed. Rejects only when
- * `$.state` refuses to record a failure.
- */
-export async function runLoad(io: PaneIo): Promise<void> {
-  let username: string | null = null
-  let token: string | undefined
-  try {
-    const account = parseAccount(await io.readAccount())
-    const url = account === undefined ? undefined : userCommitsUrl(account.username)
-    if (account === undefined || url === undefined) {
-      await io.changeLoad(() => ({ kind: 'not-set-up' }))
-
-      return
+    const { Input } = $.ui.resolve(e)
+    const post = postView(await read($, POST), nowMs, e.surface)
+    const ruleWidth = Number.isSafeInteger(e.props.bodyColumns) ? Math.min(Math.max(e.props.bodyColumns, 1), RULE_MAX) : 1
+    const onSubmit = (value: string, input: UiInputArgument) => {
+      void submit($, value, input)
     }
-    const { username: name } = account
-    username = name
 
-    const startedAtMs = await io.now()
-    const mine = io.newToken()
-    const claimed = await io.changeLoad(current => startLoad(current, name, mine, startedAtMs))
-    if (claimed.kind !== 'loading' || claimed.token !== mine) return
-    token = mine
-
-    let answer: CommitsAnswer
-    try {
-      answer = readCommitsAnswer(await io.fetchCommits(url))
-    } catch {
-      // No answer within 30 s, a refused connection, or the fetch was refused.
-      answer = { kind: 'problem', problem: { kind: 'network' } }
-    }
-    const doneAtMs = await io.now()
-    if (answer.kind === 'list') await io.storeCommits(name, answer.commits, doneAtMs)
-    await io.changeLoad(current => finishLoad(current, mine, answer, doneAtMs))
-  } catch {
-    // $.store, $.state or $.clock refused: say so rather than load forever.
-    // Another load in flight is left alone.
-    const failedAs = username
-    const ownToken = token
-    await io.changeLoad(current =>
-      current.kind === 'loading' && current.token !== ownToken
-        ? current
-        : failedLoad(failedAs, { kind: 'local' }, 0, pageOf(current, failedAs)),
+    return (
+      <Box flexDirection="column">
+        {list}
+        <Box key="compose" flexDirection="column" marginTop={1}>
+          <Text color="subtle" wrap="truncate-end">
+            {'\u2500'.repeat(ruleWidth)}
+          </Text>
+          {post.kind === 'sending' ? (
+            <Text color="subtle">
+              {INPUT_LABEL} {POSTING_TEXT}
+            </Text>
+          ) : (
+            <Box flexDirection="column">
+              <Input
+                key={post.key}
+                label={INPUT_LABEL}
+                placeholder={INPUT_PLACEHOLDER}
+                value={post.draft}
+                submitLabel="post"
+                onSubmit={onSubmit}
+              />
+              {post.committed !== undefined && (
+                <Box flexDirection="row" columnGap={1}>
+                  <Text color="success">{COMMITTED_TEXT}</Text>
+                  {post.committed.href === undefined ? [] : [<Link key="posted" href={post.committed.href} label={'open \u2197'} />]}
+                </Box>
+              )}
+              {post.lines.map(line => (
+                <Text color={post.isProblem ? 'error' : 'subtle'}>{line}</Text>
+              ))}
+            </Box>
+          )}
+        </Box>
+      </Box>
     )
+  })
+}
+
+/**
+ * Enter in the input: refuses an empty or too long body before anything runs,
+ * else posts it as `/devnull commit` would, shows what that came to, and
+ * loads the list again after a commit. Never rejects.
+ */
+async function submit($: EngineInterface, value: string, input: UiInputArgument): Promise<void> {
+  // The field is drawn only on the terminal; a submit from any other surface
+  // is not one the person made in their own local session.
+  if (!isPostingSurface(input)) return
+
+  try {
+    const nowMs = await $.clock.now()
+    const check = checkBody(value)
+    switch (check.kind) {
+      case 'ok':
+        break
+      case 'empty':
+        await update($, POST, current => refusePost(current, '', [PANE_EMPTY_TEXT], nowMs))
+        return
+      case 'too-long':
+        await update($, POST, current => refusePost(current, value, [tooLongText(check.length)], nowMs))
+        return
+      default: {
+        const unknownCheck: never = check
+        void unknownCheck
+        return
+      }
+    }
+
+    const token = crypto.randomUUID()
+    const claimed = await update($, POST, current => startPost(current, token, value, nowMs))
+    // Another post is in flight: the pane says so, and this one is not sent.
+    if (claimed.sending?.token !== token) return
+
+    let result: PostResult
+    try {
+      result = await postCommit(postingIo($, () => false), 'commit', value)
+    } catch {
+      // Only steps before the request can throw ($.store, $.clock, building
+      // the payload); every later one is caught inside: nothing was sent.
+      result = { committed: null, lines: [POST_FAILED_TEXT] }
+    }
+    await update($, POST, current => finishPost(current, token, result))
+    if (result.committed !== null) await reloadPaneIfOpen($)
+  } catch {
+    $.ui.toast(POST_LOST_TOAST)
   }
 }

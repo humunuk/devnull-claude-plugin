@@ -1,11 +1,12 @@
 // `/devnull setup`: list the SSH agent's keys, or choose one of them and the
-// /dev/null username once dev-null.sh confirms it knows the key. The hook only
-// checks who asked and hands `runSetup` the three things it may do outside
-// the mod: run `ssh-add -L`, send the key lookup, and keep the choice.
+// /dev/null username once dev-null.sh confirms it knows the key and has a user
+// of that username. The hook only checks who asked and hands `runSetup` the
+// four things it may do outside the mod: run `ssh-add -L`, send the key
+// lookup, ask for the profile, and keep the choice.
 
 import type { HttpResponse, On, ProcessRunResult } from 'claude-code'
 
-import { ACCOUNT_KEY, USERNAME } from './lib/account'
+import { ACCOUNT_KEY } from './lib/account'
 import type { Account } from './lib/account'
 import { SSH_ADD_LIST, SSH_ADD_TIMEOUT_MS, readAgentList } from './lib/agent'
 import type { AgentList } from './lib/agent'
@@ -14,6 +15,8 @@ import { findKey, parseKeyChoice } from './lib/keys'
 import type { AgentKey } from './lib/keys'
 import { KEY_LOOKUP_URL, keyLookupRequest, readLookup } from './lib/lookup'
 import type { LookupOutcome } from './lib/lookup'
+import { PROFILE_REQUEST, readProfile, userProfileUrl } from './lib/user'
+import type { ProfileOutcome } from './lib/user'
 
 const LIST_USAGE = '/devnull setup                    list the keys in your SSH agent'
 const CHOOSE_USAGE = '/devnull setup <key> <username>   sign with that key (its number or SHA256: fingerprint) as that /dev/null user'
@@ -56,12 +59,22 @@ export const NOT_FOUND_TEXT = [
   'Add it on GitHub (Settings, SSH and GPG keys), sign in on https://dev-null.sh again, then run /devnull setup again.',
 ].join('\n')
 
-export const STORE_FAILED_TEXT = 'dev-null.sh knows this key, but saving your choice failed. Run /devnull setup again.'
+export const USER_NOT_FOUND_TEXT = [
+  'No /dev/null user has that username, so nothing was saved.',
+  'Usernames are case-sensitive: type yours exactly as your profile on https://dev-null.sh shows it, then run /devnull setup again.',
+].join('\n')
+
+export const OTHER_USER_TEXT =
+  'dev-null.sh answered with a profile, but not of the username that was asked for, so nothing was saved. Run /devnull setup again later.'
+
+export const STORE_FAILED_TEXT = 'dev-null.sh knows this key and this username, but saving your choice failed. Run /devnull setup again.'
 
 /** What setup may do outside the mod, each bound to one fixed call on `$`. */
 export type SetupIo = {
   listAgentKeys: () => Promise<ProcessRunResult>
   lookUpKey: (publicKey: string) => Promise<HttpResponse>
+  /** Asks for the profile at that URL, one userProfileUrl built. */
+  lookUpUser: (url: string) => Promise<HttpResponse>
   saveAccount: (account: Account) => Promise<void>
 }
 
@@ -74,6 +87,7 @@ export function registerSetup(on: On): void {
     const io: SetupIo = {
       listAgentKeys: () => $.process.run(SSH_ADD_LIST, { timeoutMs: SSH_ADD_TIMEOUT_MS }),
       lookUpKey: publicKey => $.http.fetch(KEY_LOOKUP_URL, keyLookupRequest(publicKey)),
+      lookUpUser: url => $.http.fetch(url, PROFILE_REQUEST),
       saveAccount: account => $.store.set(ACCOUNT_KEY, account),
     }
 
@@ -106,7 +120,8 @@ async function listKeys(io: SetupIo): Promise<string> {
 async function chooseKey(io: SetupIo, choiceText: string, username: string): Promise<string> {
   const choice = parseKeyChoice(choiceText)
   if (choice === undefined) return BAD_CHOICE_TEXT
-  if (!USERNAME.test(username)) return BAD_USERNAME_TEXT
+  const profileUrl = userProfileUrl(username)
+  if (profileUrl === undefined) return BAD_USERNAME_TEXT
 
   // The key must be in the agent now: it is the one that will sign.
   const agent = await readAgent(io)
@@ -122,6 +137,34 @@ async function chooseKey(io: SetupIo, choiceText: string, username: string): Pro
   }
 
   switch (outcome.kind) {
+    case 'found':
+      return checkUserAndSave(io, key, username, profileUrl)
+    case 'mismatch':
+      return MISMATCH_TEXT
+    case 'not-found':
+      return NOT_FOUND_TEXT
+    case 'rate-limited':
+      return rateLimitedText(outcome.retryAfterSeconds)
+    case 'failed':
+      return failedText(outcome.status)
+    default: {
+      const unknownOutcome: never = outcome
+
+      return unknownOutcome
+    }
+  }
+}
+
+/** Once the key is known: saves the choice only when dev-null.sh has a user of exactly that username. */
+async function checkUserAndSave(io: SetupIo, key: AgentKey, username: string, profileUrl: string): Promise<string> {
+  let outcome: ProfileOutcome
+  try {
+    outcome = readProfile(username, await io.lookUpUser(profileUrl))
+  } catch {
+    return LOOKUP_UNREACHABLE_TEXT
+  }
+
+  switch (outcome.kind) {
     case 'found': {
       try {
         await io.saveAccount({ fingerprint: key.fingerprint, publicKey: key.publicKey, username })
@@ -131,10 +174,10 @@ async function chooseKey(io: SetupIo, choiceText: string, username: string): Pro
 
       return savedText(key, username)
     }
-    case 'mismatch':
-      return MISMATCH_TEXT
+    case 'other-user':
+      return OTHER_USER_TEXT
     case 'not-found':
-      return NOT_FOUND_TEXT
+      return USER_NOT_FOUND_TEXT
     case 'rate-limited':
       return rateLimitedText(outcome.retryAfterSeconds)
     case 'failed':
@@ -185,7 +228,7 @@ function describeKey(key: AgentKey): string {
 export function savedText(key: AgentKey, username: string): string {
   return [
     `Saved. /devnull will sign with ${describeKey(key)}`,
-    `and post as ${username}. dev-null.sh knows this key; the username is compared with the one on your first post.`,
+    `and post as ${username}. dev-null.sh knows this key and this username; your first post shows whether they belong together.`,
   ].join('\n')
 }
 

@@ -7,7 +7,8 @@ import type { Register } from 'claude-code'
 
 import { endAlerts, registerAlerts } from './alerts'
 import { registerUsage } from './commands'
-import { endPane, registerPane } from './pane'
+import { registerPane } from './pane'
+import { endPane } from './pane-core'
 import { registerPosting } from './posting'
 import { registerSetup } from './setup'
 
@@ -15,8 +16,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'devnull',
-      description: 'Unofficial /dev/null (dev-null.sh) client: choose your signing key and username',
-      argumentHint: '[setup]',
+      description: 'Unofficial /dev/null (dev-null.sh) client: post and reply signed with your SSH key, see your commits in a pane, get told of new replies',
+      argumentHint: '[setup | commit | reply | on | off]',
       immediate: true,
     })
 

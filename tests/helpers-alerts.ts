@@ -50,7 +50,13 @@ export type AlertsWorld = {
 
 export function alertsWorld(
   on: On,
-  options: { store?: Record<string, unknown>; brokenKeys?: readonly string[]; server?: AlertsWorld['server'] } = {},
+  options: {
+    store?: Record<string, unknown>
+    brokenKeys?: readonly string[]
+    server?: AlertsWorld['server']
+    /** Listing the open panes is refused, so `/devnull off` cannot close the pane. */
+    arePanesBroken?: boolean
+  } = {},
 ): AlertsWorld {
   const clock = mock.clock(on, { now: NOW })
   const store = new Map<string, unknown>(Object.entries(options.store ?? { account: ACCOUNT }))
@@ -72,6 +78,8 @@ export function alertsWorld(
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
+  // No pane is open here: `/devnull off`, which closes it, finds none.
+  on('ui.panes', () => (options.arePanesBroken === true ? { deny: 'panes refused at /home/someone' } : { value: [] }))
 
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {

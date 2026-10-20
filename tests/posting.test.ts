@@ -576,6 +576,10 @@ describe('completion in the prompt box', () => {
     expect(rows).toEqual([{ text: 'commit', label: 'commit', description: 'post a commit, signed with your SSH key' }])
     expect(texts((await complete('/devnull  re')).rows)).toEqual(['reply'])
     expect(texts((await complete('/devnull s')).rows)).toEqual(['setup'])
+    expect((await complete('/devnull o')).rows).toEqual([
+      { text: 'off', label: 'off', description: 'stop checking for new replies, and close the pane' },
+      { text: 'on', label: 'on', description: 'check for new replies again' },
+    ])
     expect(texts((await complete('/devnull x')).rows)).toEqual([])
     expect(reads).toEqual([])
   })

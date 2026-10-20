@@ -3,6 +3,8 @@
 // URL from a response is never passed on; the caller rebuilds it from the
 // parts the guards accepted. Pure.
 
+import type { RenderSurface } from 'claude-code'
+
 import { USERNAME } from './account'
 
 export const ORIGIN = 'https://dev-null.sh'
@@ -22,4 +24,22 @@ export function profileUrl(username: string): string | undefined {
   if (!USERNAME.test(username)) return undefined
 
   return `${ORIGIN}/@${username}`
+}
+
+/**
+ * The commit's link as a `Link` on `surface` takes it: commitUrl's on the
+ * terminal, and with the `@` before the username written `%40` on every other
+ * surface. The engine (2.1.304) holds a link's href on every surface but the
+ * terminal to printable ASCII, https, canonical form and no raw `@`, and draws
+ * one that fails as plain text ("its href holds a raw @, and the <surface>
+ * surface is sent no other link"); dev-null.sh serves
+ * `/%40<username>/commits/<id>` as the same page (200, checked live). A
+ * terminal without OSC 8 links prints the address itself, so there the `@`
+ * that reads normally stays.
+ */
+export function commitLink(username: string, id: string, surface: RenderSurface): string | undefined {
+  const url = commitUrl(username, id)
+  if (url === undefined || surface === 'terminal') return url
+
+  return `${ORIGIN}/%40${url.slice(`${ORIGIN}/@`.length)}`
 }

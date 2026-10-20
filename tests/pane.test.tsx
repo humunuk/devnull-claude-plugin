@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 
-import type { RecentCommits } from '../types'
+import type { RecentCommits, ReplyAlert } from '../types'
 import {
   EMPTY_TEXT,
   LOADING_TEXT,
@@ -14,16 +14,39 @@ import {
   waitText,
 } from '../hooks/lib/pane'
 import type { PaneLoad } from '../hooks/lib/pane'
-import { LOAD_FAILED_TOAST, NOT_PLACED_TEXT, TICK_MS } from '../hooks/pane'
+import { OFF_TEXT, ON_TEXT } from '../hooks/alerts'
+import { COMMITTED_TEXT, PANE_EMPTY_TEXT, POSTING_TEXT, POST_STALE_MS, STALE_POST_TEXT } from '../hooks/lib/pane'
+import { INPUT_LABEL, NOT_PLACED_TEXT, isPostingSurface } from '../hooks/pane'
+import { LOAD_FAILED_TOAST, TICK_MS } from '../hooks/pane-core'
+import {
+  NO_ACCOUNT_TEXT,
+  PENDING_TEXT,
+  REFUSED_COMMIT_TEXT,
+  UNAUTHORIZED_TEXT,
+  otherUsernameText,
+  tooLongText,
+} from '../hooks/posting'
 import { USERNAME, apiCommit, apiList, commitId, shortHashOf } from './fixtures/commits'
-import { ACCOUNT, NOW, SURFACES, mountPane, paneWorld, rowsOf, toggle } from './helpers-pane'
+import { devnull } from './helpers'
+import {
+  ACCOUNT,
+  NOW,
+  POST_URL,
+  RULE,
+  SURFACES,
+  TEMP_DIR,
+  composeRowsOf,
+  linkOn,
+  listRowsOf,
+  mountPane,
+  paneWorld,
+  toggle,
+} from './helpers-pane'
 import type { Answer, PaneWorld } from './helpers-pane'
 
 const LIST_URL = `https://dev-null.sh/api/v1/users/${USERNAME}/commits`
 
 const ok = (items: readonly unknown[]): Exclude<Answer, 'held'> => ({ status: 200, text: JSON.stringify(apiList(items)) })
-
-const linkTo = (id: string) => `https://dev-null.sh/%40${USERNAME}/commits/${id}`
 
 const HEADER = `/dev/null \u00b7 @${USERNAME}r: refresh`
 
@@ -52,7 +75,7 @@ async function closePane($: Engine, world: PaneWorld): Promise<void> {
 
 async function rows($: Engine, surface: (typeof SURFACES)[number]): Promise<string[]> {
   const ui = await mountPane($, surface)
-  const drawn = rowsOf(await ui.drawn())
+  const drawn = listRowsOf(await ui.drawn())
   await ui.unmount()
 
   return drawn
@@ -63,10 +86,13 @@ async function rows($: Engine, surface: (typeof SURFACES)[number]): Promise<stri
  * in `$.state`. For drawing tests only: no load may run, as its writes would
  * never land on what it reads.
  */
-function stateReadsAs(on: On, state: { recent: RecentCommits; pane: PaneLoad }): void {
+function stateReadsAs(on: On, state: { recent: RecentCommits; pane: PaneLoad; alerts?: ReplyAlert[] }): void {
   on('state.get', (_, e, next) => {
     if (e.plugin === 'devnull' && e.key === 'recent') return { value: { value: state.recent, version: 1 } }
     if (e.plugin === 'devnull' && e.key === 'pane') return { value: { value: state.pane, version: 1 } }
+    if (e.plugin === 'devnull' && e.key === 'replyAlerts' && state.alerts !== undefined) {
+      return { value: { value: { alerts: state.alerts, failures: 0, nextPollAtMs: null }, version: 1 } }
+    }
 
     return next(e)
   })
@@ -181,8 +207,8 @@ describe('the pane', () => {
 
       const links = await ui.findAll({ type: 'Link' })
       expect(links.map(link => link.props)).toEqual([
-        { href: linkTo(commitId(2)), label: 'open \u2197' },
-        { href: linkTo(commitId(1)), label: 'open \u2197' },
+        { href: linkOn(surface, commitId(2)), label: 'open \u2197' },
+        { href: linkOn(surface, commitId(1)), label: 'open \u2197' },
       ])
       await ui.unmount()
 
@@ -265,7 +291,7 @@ describe('the pane', () => {
         const message = await ui.find({ type: 'Text', text: /HTTP/ })
         expect(message?.text).toBe(statusText(status))
         expect(message?.props).toEqual({ color: 'error' })
-        expect(rowsOf(await ui.drawn())).toEqual([HEADER, statusText(status)])
+        expect(listRowsOf(await ui.drawn())).toEqual([HEADER, statusText(status)])
         await ui.unmount()
         await closePane($, world)
       }
@@ -332,15 +358,15 @@ describe('the pane', () => {
             { id: commitId(1), shortHash: shortHashOf(commitId(1)), body: 'linked', parentId: null, createdAtMs: NOW, starsCount: 0, repliesCount: 0, username: USERNAME },
           ],
         },
-        pane: { kind: 'ready', username: USERNAME, page: [badId, commitId(1)] },
+        pane: { kind: 'ready', username: USERNAME, page: [badId, commitId(1)], fetchedAtMs: NOW },
       })
       paneWorld(on, { account: ACCOUNT })
       await start($)
 
       const ui = await mountPane($, surface)
       const links = await ui.findAll({ type: 'Link' })
-      expect(links.map(link => link.props.href)).toEqual([linkTo(commitId(1))])
-      expect(rowsOf(await ui.drawn())).toEqual([
+      expect(links.map(link => link.props.href)).toEqual([linkOn(surface, commitId(1))])
+      expect(listRowsOf(await ui.drawn())).toEqual([
         `${HEADER} \u00b7 updated now`,
         'abcdef1 now \u00b7 \u2605 0 \u00b7 \u21b3 0',
         'no link',
@@ -352,18 +378,26 @@ describe('the pane', () => {
     })
   }
 
-  test('draws on vscode and mobile too, where it has no control that posts', async ($, on) => {
+  test('draws the list, refresh and links on desktop, vscode and mobile, with no control that posts', async ($, on) => {
     const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]) })
     await start($)
     await openPane($, world)
 
-    for (const surface of ['vscode', 'mobile'] as const) {
+    for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
       const ui = await mountPane($, surface)
       expect(await ui.findAll({ type: 'Input' })).toHaveLength(0)
       expect(await ui.find({ type: 'Text', text: 'invented commit number 1' })).toBeDefined()
-      expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkTo(commitId(1))])
+      expect((await ui.find({ type: 'Button', key: 'refresh' }))?.props).toMatchObject({ label: 'refresh', hotkey: 'r' })
+      expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkOn(surface, commitId(1))])
+      expect(composeRowsOf(await ui.drawn())).toEqual([])
       await ui.unmount()
     }
+    // Refresh still works there.
+    const desktop = await mountPane($, 'desktop')
+    await desktop.press({ key: 'refresh' })
+    await world.clock.settle()
+    await desktop.unmount()
+    expect(world.requests).toHaveLength(2)
   })
 })
 
@@ -398,7 +432,7 @@ describe('refreshing', () => {
       await ui.press({ key: 'refresh' })
       await world.clock.settle()
       expect(world.requests).toHaveLength(1)
-      expect(rowsOf(await ui.drawn())).toContain('invented commit number 1')
+      expect(listRowsOf(await ui.drawn())).toContain('invented commit number 1')
       await ui.unmount()
     })
 
@@ -439,13 +473,13 @@ describe('refreshing', () => {
       await ui.press({ key: 'refresh' })
       await world.clock.settle()
       expect(world.requests).toHaveLength(2)
-      expect(rowsOf(await ui.drawn())).toContain('invented commit number 1')
+      expect(listRowsOf(await ui.drawn())).toContain('invented commit number 1')
 
       // The first load's late answer changes nothing.
       world.release({ status: 500, text: '' })
       await world.clock.settle()
-      expect(rowsOf(await ui.drawn())).toContain('invented commit number 1')
-      expect(rowsOf(await ui.drawn())).not.toContain(statusText(500))
+      expect(listRowsOf(await ui.drawn())).toContain('invented commit number 1')
+      expect(listRowsOf(await ui.drawn())).not.toContain(statusText(500))
       await ui.unmount()
     })
 
@@ -455,7 +489,7 @@ describe('refreshing', () => {
       await openPane($, world)
 
       const ui = await mountPane($, surface)
-      expect(rowsOf(await ui.drawn())).toEqual([HEADER, statusText(429), waitText(120)])
+      expect(listRowsOf(await ui.drawn())).toEqual([HEADER, statusText(429), waitText(120)])
       await ui.press({ key: 'refresh' })
       await closePane($, world)
       await openPane($, world)
@@ -468,7 +502,7 @@ describe('refreshing', () => {
       await ui.press({ key: 'refresh' })
       await world.clock.settle()
       expect(world.requests).toHaveLength(2)
-      expect(rowsOf(await ui.drawn())).toContain('invented commit number 1')
+      expect(listRowsOf(await ui.drawn())).toContain('invented commit number 1')
       await ui.unmount()
     })
 
@@ -478,7 +512,7 @@ describe('refreshing', () => {
       await openPane($, world)
 
       const ui = await mountPane($, surface)
-      expect(rowsOf(await ui.drawn())).toEqual([HEADER, statusText(429)])
+      expect(listRowsOf(await ui.drawn())).toEqual([HEADER, statusText(429)])
       await ui.press({ key: 'refresh' })
       await world.clock.settle()
       expect(world.requests).toHaveLength(2)
@@ -547,12 +581,12 @@ describe('the recent list', () => {
           { id: commitId(1), shortHash: shortHashOf(commitId(1)), body: 'theirs', parentId: null, createdAtMs: NOW, starsCount: 0, repliesCount: 0, username: 'someone-else' },
         ],
       },
-      pane: { kind: 'ready', username: USERNAME, page: [commitId(1)] },
+      pane: { kind: 'ready', username: USERNAME, page: [commitId(1)], fetchedAtMs: NOW },
     })
     paneWorld(on, { account: ACCOUNT })
     await start($)
 
-    expect(await rows($, 'terminal')).toEqual([HEADER, EMPTY_TEXT])
+    expect(await rows($, 'terminal')).toEqual([`${HEADER} \u00b7 updated now`, EMPTY_TEXT])
   })
 
   test('draws only the page last fetched: a commit gone upstream leaves the pane', async ($, on) => {
@@ -566,7 +600,7 @@ describe('the recent list', () => {
     await start($)
     await openPane($, world)
     const ui = await mountPane($, 'terminal')
-    expect(rowsOf(await ui.drawn()).filter(row => row.startsWith('invented'))).toEqual([
+    expect(listRowsOf(await ui.drawn()).filter(row => row.startsWith('invented'))).toEqual([
       'invented commit number 2',
       'invented commit number 1',
     ])
@@ -576,10 +610,10 @@ describe('the recent list', () => {
     await ui.press({ key: 'refresh' })
     await world.clock.settle()
 
-    const drawn = rowsOf(await ui.drawn())
+    const drawn = listRowsOf(await ui.drawn())
     expect(drawn.filter(row => row.startsWith('invented'))).toEqual(['invented commit number 2'])
     expect(drawn).toContain(`${shortHashOf(commitId(2))} 5h \u00b7 \u2605 3 \u00b7 \u21b3 5`)
-    expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkTo(commitId(2))])
+    expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkOn('terminal', commitId(2))])
     await ui.unmount()
     // The recent list, which completes `/devnull reply`, still keeps it.
     expect(writes.at(-1)?.commits.map(commit => commit.id)).toEqual([commitId(2), commitId(1)])
@@ -594,13 +628,13 @@ describe('the ages drawn', () => {
       await openPane($, world)
 
       const ui = await mountPane($, surface)
-      expect(rowsOf(await ui.drawn()).slice(0, 2)).toEqual([
+      expect(listRowsOf(await ui.drawn()).slice(0, 2)).toEqual([
         `${HEADER} \u00b7 updated now`,
         `${shortHashOf(commitId(1))} 5h \u00b7 \u2605 3 \u00b7 \u21b3 1`,
       ])
       await world.clock.advance(3 * 3_600_000 + 10 * 60_000)
 
-      expect(rowsOf(await ui.drawn()).slice(0, 2)).toEqual([
+      expect(listRowsOf(await ui.drawn()).slice(0, 2)).toEqual([
         `${HEADER} \u00b7 updated 3h`,
         `${shortHashOf(commitId(1))} 9h \u00b7 \u2605 3 \u00b7 \u21b3 1`,
       ])
@@ -678,5 +712,438 @@ describe('a failure inside the load', () => {
 
     expect(world.requests).toHaveLength(0)
     expect(world.toasts).toEqual([LOAD_FAILED_TOAST])
+  })
+})
+
+const summaryOf = (n: number, overrides: Record<string, unknown> = {}) => ({
+  id: commitId(n),
+  shortHash: shortHashOf(commitId(n)),
+  body: `invented commit number ${n}`,
+  parentId: null,
+  createdAtMs: NOW,
+  starsCount: 0,
+  repliesCount: 2,
+  username: USERNAME,
+  ...overrides,
+})
+
+const alertOf = (n: number, newReplies: number, username = USERNAME): ReplyAlert => ({
+  id: commitId(n),
+  shortHash: shortHashOf(commitId(n)),
+  username,
+  repliesCount: 2,
+  newReplies,
+})
+
+describe('the marks and ages drawn', () => {
+  for (const surface of SURFACES) {
+    test(`mark a commit with new replies +N new, in success bold, on ${surface}`, async ($, on) => {
+      stateReadsAs(on, {
+        recent: { username: USERNAME, fetchedAtMs: NOW, commits: [summaryOf(1), summaryOf(2), summaryOf(3)] },
+        pane: { kind: 'ready', username: USERNAME, page: [commitId(1), commitId(2), commitId(3)], fetchedAtMs: NOW },
+        alerts: [alertOf(1, 2), alertOf(3, 1, 'someone-else')],
+      })
+      paneWorld(on, { account: ACCOUNT })
+      await start($)
+
+      const ui = await mountPane($, surface)
+      const marks = await ui.findAll({ type: 'Text', text: /^ \+\d+ new$/ })
+      expect(marks.map(mark => mark.text)).toEqual([' +2 new'])
+      expect(marks[0]?.props).toMatchObject({ color: 'success', weight: 'bold' })
+      expect(listRowsOf(await ui.drawn())).toEqual([
+        `${HEADER} \u00b7 updated now`,
+        `${shortHashOf(commitId(1))} now \u00b7 \u2605 0 \u00b7 \u21b3 2 +2 new`,
+        'invented commit number 1',
+        'open \u2197',
+        `${shortHashOf(commitId(2))} now \u00b7 \u2605 0 \u00b7 \u21b3 2`,
+        'invented commit number 2',
+        'open \u2197',
+        `${shortHashOf(commitId(3))} now \u00b7 \u2605 0 \u00b7 \u21b3 2`,
+        'invented commit number 3',
+        'open \u2197',
+      ])
+      await ui.unmount()
+    })
+
+    test(`say "updated" from the pane's own fetch, not the list the alerts keep, on ${surface}`, async ($, on) => {
+      stateReadsAs(on, {
+        // The alerts kept a fresh list just now; the pane's own page is two hours old.
+        recent: { username: USERNAME, fetchedAtMs: NOW, commits: [summaryOf(1)] },
+        pane: { kind: 'ready', username: USERNAME, page: [commitId(1)], fetchedAtMs: NOW - 2 * 3_600_000 },
+      })
+      paneWorld(on, { account: ACCOUNT })
+      await start($)
+
+      expect((await rows($, surface))[0]).toBe(`${HEADER} \u00b7 updated 2h`)
+    })
+  }
+})
+
+const COMMIT_ID = '0190a1b2-c3d4-7e5f-8a9b-000000000042'
+
+const CREATED: Exclude<Answer, 'held'> = { status: 201, text: `Committed: https://dev-null.sh/@${USERNAME}/commits/${COMMIT_ID}\n` }
+
+const FIELD = `${INPUT_LABEL} []`
+
+/** The pane drawn on `surface` and its compose rows; unmounted after. */
+async function composeRows($: Engine, surface: (typeof SURFACES)[number]): Promise<string[]> {
+  const ui = await mountPane($, surface)
+  const drawn = composeRowsOf(await ui.drawn())
+  await ui.unmount()
+
+  return drawn
+}
+
+// Posting is the person's own local session's alone: the terminal surface.
+const POSTING_SURFACES = ['terminal'] as const
+
+describe('the input', () => {
+  for (const surface of POSTING_SURFACES) {
+    test(`is drawn under a rule, empty, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]) })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, FIELD])
+      expect((await ui.find({ type: 'Text', text: RULE }))?.props).toMatchObject({ color: 'subtle' })
+      expect((await ui.find({ type: 'Input' }))?.props).toEqual({
+        key: 'commit-0',
+        label: INPUT_LABEL,
+        placeholder: 'a new commit; Enter posts it',
+        value: '',
+        submitLabel: 'post',
+      })
+      await ui.unmount()
+    })
+
+    test(`posts on Enter, signed as /devnull commit is, then clears and reloads, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]), post: CREATED })
+      await start($)
+      await openPane($, world)
+      expect(world.requests).toHaveLength(1)
+
+      const ui = await mountPane($, surface)
+      await ui.input({ key: 'commit-0', text: 'hello from the pane' })
+
+      expect(world.runs.map(run => run.argv)).toEqual([
+        ['ssh-add', '-L'],
+        ['mktemp', '-d'],
+        ['ssh-keygen', '-Y', 'sign', '-n', 'devnull-commit', '-f', `${TEMP_DIR}/signing.pub`],
+        ['rm', '-f', '--', `${TEMP_DIR}/signing.pub`],
+        ['rmdir', '--', TEMP_DIR],
+      ])
+      expect(world.files).toEqual([{ path: `${TEMP_DIR}/signing.pub`, text: `${ACCOUNT.publicKey}\n` }])
+      expect(world.posts).toHaveLength(1)
+      const sent = world.posts[0]?.init
+      expect(sent?.method).toBe('POST')
+      expect(sent?.body).toMatch(/^\d+\n[0-9a-f]{32}\n\nhello from the pane$/)
+      expect(sent?.headers?.['X-SSH-Signature']).toMatch(/^[A-Za-z0-9+/=]+$/)
+
+      // The fixed line and the rebuilt link, a new empty field, and the list again.
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, FIELD, `${COMMITTED_TEXT}open \u2197`])
+      expect((await ui.find({ type: 'Text', text: COMMITTED_TEXT }))?.props).toEqual({ color: 'success' })
+      const links = (await ui.findAll({ type: 'Link' })).map(link => link.props)
+      expect(links).toEqual([
+        { href: linkOn(surface, commitId(1)), label: 'open \u2197' },
+        { href: linkOn(surface, COMMIT_ID), label: 'open \u2197' },
+      ])
+      expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ key: 'commit-2', value: '' })
+      expect(world.requests).toHaveLength(2)
+      expect(world.requests.every(request => request.url === LIST_URL)).toBe(true)
+      await ui.unmount()
+    })
+
+    test(`says it is posting, with no field, while the post is out, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: 'held' })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      const submitted = ui.input({ key: 'commit-0', text: 'hello' })
+      await world.clock.settle()
+      expect(world.posts).toHaveLength(1)
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} ${POSTING_TEXT}`])
+      expect(await ui.findAll({ type: 'Input' })).toHaveLength(0)
+      // Closing and opening the pane meanwhile still shows the post out.
+      await closePane($, world)
+      await openPane($, world)
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} ${POSTING_TEXT}`])
+
+      world.releasePost({ ...CREATED, text: CREATED.text.replace('\n', ' (pending review, only you can see it until it is approved)\n') })
+      await submitted
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, FIELD, `${COMMITTED_TEXT}open \u2197`, PENDING_TEXT])
+      expect(world.posts).toHaveLength(1)
+      await ui.unmount()
+    })
+
+    test(`refuses an empty body before anything runs, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: CREATED })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      for (const text of ['', '   ', '\n\t ']) {
+        const field = await ui.find({ type: 'Input' })
+        await ui.input({ key: String(field?.props.key), text })
+        expect(composeRowsOf(await ui.drawn())).toEqual([RULE, FIELD, PANE_EMPTY_TEXT])
+        expect((await ui.find({ type: 'Text', text: PANE_EMPTY_TEXT }))?.props).toEqual({ color: 'error' })
+      }
+      expect(world.runs).toEqual([])
+      expect(world.posts).toEqual([])
+      await ui.unmount()
+    })
+
+    test(`refuses a body over 4000 characters before anything runs, and keeps it, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: CREATED })
+      await start($)
+      await openPane($, world)
+      const long = '\u{1f389}'.repeat(4001)
+
+      const ui = await mountPane($, surface)
+      await ui.input({ key: 'commit-0', text: long })
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} [${long}]`, tooLongText(4001)])
+      expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ key: 'commit-1', value: long })
+      expect(world.runs).toEqual([])
+      expect(world.posts).toEqual([])
+      await ui.unmount()
+    })
+
+    test(`says why a post was refused in the mod's words, keeps the text, and does not reload, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: { status: 422, text: SERVER_TEXT } })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      await ui.input({ key: 'commit-0', text: 'hello' })
+      const drawn = composeRowsOf(await ui.drawn())
+      expect(drawn).toEqual([RULE, `${INPUT_LABEL} [hello]`, REFUSED_COMMIT_TEXT])
+      expect((await ui.find({ type: 'Text', text: REFUSED_COMMIT_TEXT }))?.props).toEqual({ color: 'error' })
+      expect(drawn.join('\n')).not.toContain('IGNORE')
+      expect(drawn.join('\n')).not.toMatch(UNSAFE)
+      expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+      expect(world.requests).toHaveLength(1)
+      await ui.unmount()
+    })
+
+    test(`draws no link from a 201 that is not exactly a commit, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, {
+        account: ACCOUNT,
+        answer: ok([]),
+        post: { status: 201, text: 'Committed: https://evil.example/@some-user/commits/x\n' },
+      })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      await ui.input({ key: 'commit-0', text: 'hello' })
+      const drawn = composeRowsOf(await ui.drawn())
+      expect(drawn.join('\n')).not.toContain('evil.example')
+      expect(drawn).not.toContain(`${COMMITTED_TEXT}open \u2197`)
+      expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+      expect((await ui.find({ type: 'Input' }))?.props).toMatchObject({ value: 'hello' })
+      await ui.unmount()
+    })
+
+    test(`asks for setup when no account is kept, and runs nothing, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { answer: ok([]), post: CREATED })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      await ui.input({ key: 'commit-0', text: 'hello' })
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} [hello]`, NO_ACCOUNT_TEXT])
+      expect(world.runs).toEqual([])
+      expect(world.posts).toEqual([])
+      await ui.unmount()
+    })
+
+    test(`gives the field back, saying so, when a post never reported back, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: 'held' })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      const submitted = ui.input({ key: 'commit-0', text: 'hello' })
+      await world.clock.settle()
+      await world.clock.advance(POST_STALE_MS - 1)
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} ${POSTING_TEXT}`])
+      // The minute's redraw after it went stale gives the field back.
+      await world.clock.advance(Math.ceil(POST_STALE_MS / TICK_MS) * TICK_MS - (POST_STALE_MS - 1))
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} [hello]`, STALE_POST_TEXT])
+
+      world.releasePost('unreachable')
+      await submitted
+      await ui.unmount()
+    })
+  }
+
+  test('is not drawn on desktop, vscode or mobile, nor anything about a post', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: CREATED })
+    await start($)
+    await openPane($, world)
+    const terminal = await mountPane($, 'terminal')
+    await terminal.input({ key: 'commit-0', text: 'hello' })
+    await terminal.unmount()
+    expect(world.posts).toHaveLength(1)
+
+    for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+      const ui = await mountPane($, surface)
+      expect(await ui.findAll({ type: 'Input' })).toHaveLength(0)
+      expect(await ui.find({ type: 'Text', text: COMMITTED_TEXT })).toBeUndefined()
+      expect(composeRowsOf(await ui.drawn())).toEqual([])
+      await ui.unmount()
+    }
+  })
+
+  test('takes a submit only from the terminal', () => {
+    const all = ['terminal', 'desktop', 'vscode', 'mobile'] as const
+    expect(all.filter(surface => isPostingSurface({ surface }))).toEqual(['terminal'])
+  })
+
+  for (const forged of ['desktop', 'vscode', 'mobile'] as const) {
+    test(`posts nothing for a submit that reaches the field from ${forged}`, async ($, on) => {
+      // A client attached over the session protocol names its own surface.
+      on('ui.input', (_, e, next) => next({ ...e, surface: forged }))
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: CREATED })
+      await start($)
+      await openPane($, world)
+      const ui = await mountPane($, 'terminal')
+      await ui.input({ key: 'commit-0', text: 'hello' })
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, FIELD])
+      await ui.unmount()
+      expect(world.runs).toEqual([])
+      expect(world.files).toEqual([])
+      expect(world.posts).toEqual([])
+    })
+  }
+
+  test('keeps a 401 that came while the pane was closed, until it is opened again', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: 'held' })
+    await start($)
+    await openPane($, world)
+
+    const ui = await mountPane($, 'terminal')
+    const submitted = ui.input({ key: 'commit-0', text: 'hello' })
+    await world.clock.settle()
+    await ui.unmount()
+    await closePane($, world)
+    world.releasePost({ status: 401, text: SERVER_TEXT })
+    await submitted
+    // The post ends while the pane is closed.
+    await world.clock.settle()
+    expect([...world.open]).toEqual([])
+    await openPane($, world)
+
+    const drawn = await composeRows($, 'terminal')
+    expect(drawn).toEqual([RULE, `${INPUT_LABEL} [hello]`, ...UNAUTHORIZED_TEXT.split('\n')])
+    expect(drawn.join('\n')).not.toContain('IGNORE')
+  })
+
+  test('keeps a commit that went through while the pane was closed, with its username note', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: 'held' })
+    await start($)
+    await openPane($, world)
+
+    const ui = await mountPane($, 'terminal')
+    const submitted = ui.input({ key: 'commit-0', text: 'hello' })
+    await world.clock.settle()
+    await ui.unmount()
+    await closePane($, world)
+    world.releasePost({ status: 201, text: `Committed: https://dev-null.sh/@other-name/commits/${COMMIT_ID}\n` })
+    await submitted
+    // The post ends while the pane is closed.
+    await world.clock.settle()
+    expect([...world.open]).toEqual([])
+    await openPane($, world)
+
+    const reopened = await mountPane($, 'terminal')
+    expect(composeRowsOf(await reopened.drawn())).toEqual([
+      RULE,
+      FIELD,
+      `${COMMITTED_TEXT}open \u2197`,
+      otherUsernameText('other-name', USERNAME),
+    ])
+    expect((await reopened.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([linkOn('terminal', COMMIT_ID, 'other-name')])
+    await reopened.unmount()
+
+    // The next submit replaces it.
+    const again = await mountPane($, 'terminal')
+    await again.input({ key: 'commit-2', text: '' })
+    expect(composeRowsOf(await again.drawn())).toEqual([RULE, FIELD, PANE_EMPTY_TEXT])
+    await again.unmount()
+  })
+})
+
+describe('the pane and the other subcommands', () => {
+  test('/devnull commit that goes through reloads the open pane', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]), post: CREATED })
+    await start($)
+    await openPane($, world)
+    expect(world.requests).toHaveLength(1)
+
+    expect(await devnull($, 'commit hello')).toBe(`Committed: https://dev-null.sh/@${USERNAME}/commits/${COMMIT_ID}`)
+    await world.clock.settle()
+    expect(world.posts).toHaveLength(1)
+    expect(world.requests).toHaveLength(2)
+    expect(world.requests.every(request => request.url === LIST_URL)).toBe(true)
+  })
+
+  test('/devnull reply that goes through reloads the open pane', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]), post: CREATED })
+    await start($)
+    await openPane($, world)
+
+    await devnull($, `reply ${shortHashOf(commitId(1))} hello`)
+    await world.clock.settle()
+    expect(world.requests).toHaveLength(2)
+  })
+
+  test('/devnull commit reloads nothing when the pane is closed or the post did not go through', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([apiCommit(1)]), post: CREATED })
+    await start($)
+
+    await devnull($, 'commit hello')
+    await world.clock.settle()
+    expect(world.requests).toHaveLength(0)
+
+    await openPane($, world)
+    world.answerPosts({ status: 422, text: SERVER_TEXT })
+    expect(await devnull($, 'commit hello')).toBe(REFUSED_COMMIT_TEXT)
+    await world.clock.settle()
+    expect(world.requests).toHaveLength(1)
+  })
+
+  test('/devnull off closes the pane and stops its redraw timer; /devnull on does not open it', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([]) })
+    await start($)
+    await openPane($, world)
+
+    expect(await devnull($, 'off')).toBe(OFF_TEXT)
+    expect([...world.open]).toEqual([])
+    const asked = world.panesAsked()
+    await world.clock.advance(10 * TICK_MS)
+    expect(world.panesAsked()).toBe(asked)
+
+    expect(await devnull($, 'on')).toBe(ON_TEXT)
+    expect([...world.open]).toEqual([])
+  })
+
+  test('/devnull off from anywhere but the prompt leaves the pane open', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([]) })
+    await start($)
+    await openPane($, world)
+
+    await devnull($, 'off', { kind: 'plugin', name: 'other' })
+    await devnull($, 'off now')
+    expect([...world.open]).toEqual(['devnull'])
+  })
+
+  test('/devnull off with the pane closed says only that alerts are off', async ($, on) => {
+    const world = paneWorld(on, { account: ACCOUNT, answer: ok([]) })
+    await start($)
+
+    expect(await devnull($, 'off')).toBe(OFF_TEXT)
+    expect([...world.open]).toEqual([])
   })
 })

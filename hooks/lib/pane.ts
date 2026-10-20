@@ -1,14 +1,16 @@
 // The pane's pure parts: the request for the person's newest commits, what
-// its answer means, the one load allowed in flight, and what the pane draws
-// from the recent list. Pure: hooks/pane.tsx fetches, keeps and draws.
+// its answer means, the one load allowed in flight, what the pane draws from
+// the recent list, and its input's one post in flight. Pure: hooks/pane.tsx
+// and hooks/pane-core.ts fetch, post, keep and draw.
 
-import type { HttpInit, PluginState } from 'claude-code'
+import type { HttpInit, PluginState, RenderSurface } from 'claude-code'
 
-import type { CommitSummary, RecentCommits } from '../../types'
+import type { CommitSummary, RecentCommits, ReplyAlert } from '../../types'
 import { USERNAME } from './account'
 import { retryAfterSeconds } from './backoff'
 import { parseCommitList } from './commits'
-import { ORIGIN, commitUrl } from './links'
+import { ORIGIN, commitLink } from './links'
+import type { PostResult } from './posting'
 import { cleanBody, relativeAge } from './text'
 
 /** Where the pane's load stands, as the `$.state` contract declares it. */
@@ -87,7 +89,14 @@ export function startLoad(current: PaneLoad, username: string, token: string, no
   }
   if (current.kind === 'failed' && current.retryAtMs !== null && nowMs < current.retryAtMs) return current
 
-  return { kind: 'loading', username, token, startedAtMs: nowMs, page: pageOf(current, username) }
+  return {
+    kind: 'loading',
+    username,
+    token,
+    startedAtMs: nowMs,
+    page: pageOf(current, username),
+    fetchedAtMs: fetchedAtOf(current, username),
+  }
 }
 
 /**
@@ -98,18 +107,27 @@ export function startLoad(current: PaneLoad, username: string, token: string, no
 export function finishLoad(current: PaneLoad, token: string, answer: CommitsAnswer, nowMs: number): PaneLoad {
   if (current.kind !== 'loading' || current.token !== token) return current
   const { username } = current
-  if (answer.kind === 'list') return { kind: 'ready', username, page: answer.commits.map(commit => commit.id) }
+  if (answer.kind === 'list') {
+    return { kind: 'ready', username, page: answer.commits.map(commit => commit.id), fetchedAtMs: nowMs }
+  }
 
-  return failedLoad(username, answer.problem, nowMs, current.page)
+  return failedLoad(username, answer.problem, nowMs, current.page, current.fetchedAtMs)
 }
 
-export function failedLoad(username: string | null, problem: PaneProblem, nowMs: number, page: readonly string[]): PaneLoad {
+export function failedLoad(
+  username: string | null,
+  problem: PaneProblem,
+  nowMs: number,
+  page: readonly string[],
+  fetchedAtMs: number | null,
+): PaneLoad {
   const waitSeconds = problem.kind === 'status' ? problem.retryAfterSeconds : null
 
   return {
     kind: 'failed',
     username,
     page: [...page],
+    fetchedAtMs,
     problem,
     retryAtMs: waitSeconds === null ? null : nowMs + waitSeconds * 1000,
   }
@@ -122,12 +140,21 @@ export function pageOf(load: PaneLoad, username: string | null): string[] {
   return [...load.page]
 }
 
+/** When the page `load` draws arrived, when it is one for `username`; else null. */
+export function fetchedAtOf(load: PaneLoad, username: string | null): number | null {
+  if (load.kind === 'idle' || load.kind === 'not-set-up' || load.username !== username) return null
+
+  return load.fetchedAtMs
+}
+
 /** One commit as the pane draws it; every text in it is cleaned or the mod's own. */
 export type PaneCommit = {
   id: string
   hash: string
   /** `2h \u00b7 \u2605 3 \u00b7 \u21b3 1` */
   meta: string
+  /** How many of its replies the reply alerts hold as new; 0 for none. */
+  newReplies: number
   /** Up to three cleaned body lines, the last ending in an ellipsis when the body was cut. */
   lines: string[]
   /** The commit's page, or undefined when its id or username fails the link patterns. */
@@ -147,13 +174,25 @@ export type PaneView = {
   commits: PaneCommit[]
 }
 
-/** The pane's content for the load and the recent list as they stand at `nowMs`. */
-export function paneView(load: PaneLoad, recent: RecentCommits | null, nowMs: number): PaneView {
+/**
+ * The pane's content on `surface` for the load, the recent list and the reply
+ * alerts as they stand at `nowMs`. The `updated` age is the load's own last
+ * page, not the recent list's, which the reply alerts move too.
+ */
+export function paneView(
+  load: PaneLoad,
+  recent: RecentCommits | null,
+  alerts: readonly ReplyAlert[],
+  nowMs: number,
+  surface: RenderSurface,
+): PaneView {
   const username = load.kind === 'idle' || load.kind === 'not-set-up' ? null : load.username
   const title = username === null ? '/dev/null' : `/dev/null \u00b7 @${username}`
   const list = username !== null && recent !== null && recent.username === username ? recent : null
-  const commits = list === null ? [] : paneCommits(list, pageOf(load, username), nowMs)
-  const freshness = load.kind === 'loading' ? 'loading\u2026' : list === null ? '' : `updated ${relativeAge(list.fetchedAtMs, nowMs)}`
+  const commits = list === null ? [] : paneCommits(list, pageOf(load, username), alerts, nowMs, surface)
+  const fetchedAtMs = fetchedAtOf(load, username)
+  const freshness =
+    load.kind === 'loading' ? 'loading\u2026' : fetchedAtMs === null ? '' : `updated ${relativeAge(fetchedAtMs, nowMs)}`
   const view = { title, freshness, hint: undefined, commits }
 
   switch (load.kind) {
@@ -199,12 +238,22 @@ function problemText(problem: PaneProblem): string {
 
 /**
  * The commits of the page last fetched, in its order, as the recent list holds
- * them (its counts may be newer, from the reply alerts). A commit no longer on
+ * them (its counts may be newer, from the reply alerts), with the new replies
+ * the alerts hold for each and its link on `surface`. A commit no longer on
  * that page is left out, though the recent list keeps it for completion; so
  * are replies, and anything not by the list's username.
  */
-export function paneCommits(recent: RecentCommits, page: readonly string[], nowMs: number): PaneCommit[] {
+export function paneCommits(
+  recent: RecentCommits,
+  page: readonly string[],
+  alerts: readonly ReplyAlert[],
+  nowMs: number,
+  surface: RenderSurface,
+): PaneCommit[] {
   const byId = new Map(recent.commits.map(commit => [commit.id, commit]))
+  const newById = new Map(
+    alerts.filter(alert => alert.username === recent.username).map(alert => [alert.id, alert.newReplies]),
+  )
 
   return page
     .flatMap(id => {
@@ -223,21 +272,99 @@ export function paneCommits(recent: RecentCommits, page: readonly string[], nowM
         id: commit.id,
         hash: commit.shortHash,
         meta: age === '' ? counts : `${age} \u00b7 ${counts}`,
+        newReplies: newById.get(commit.id) ?? 0,
         lines,
-        href: commitHref(commit.username, commit.id),
+        href: commitLink(commit.username, commit.id, surface),
       }
     })
 }
 
-/**
- * The commit's link as a `Link` takes it: commitUrl's, with the `@` before the
- * username written `%40`. The engine (2.1.304) draws a link whose href holds a
- * raw `@` as plain text on the desktop surface; dev-null.sh is Laravel, which
- * matches routes on the decoded path, so both spellings open the same page.
- */
-export function commitHref(username: string, id: string): string | undefined {
-  const url = commitUrl(username, id)
-  if (url === undefined) return undefined
+/** `+3 new`, after a commit's counts. */
+export function newRepliesText(newReplies: number): string {
+  return `+${newReplies} new`
+}
 
-  return `${ORIGIN}/%40${url.slice(`${ORIGIN}/@`.length)}`
+/** The pane's input, as the `$.state` contract declares it. */
+export type PanePost = PluginState['devnull']['panePost']
+
+export const NO_POST: PanePost = { round: 0, draft: '', sending: null, outcome: null }
+
+/**
+ * A post that started this long ago is taken as lost: every step of one has
+ * its own timeout (ssh-add 5 s, mktemp, rm and rmdir 5 s each, ssh-keygen
+ * 60 s, the request 30 s), so only a post whose answer never came back (the
+ * mod reloaded under it) is this old.
+ */
+export const POST_STALE_MS = 150_000
+
+export const COMMITTED_TEXT = 'Committed.'
+export const POSTING_TEXT = 'posting\u2026'
+export const PANE_EMPTY_TEXT = 'Nothing to post: type your commit, then press Enter.'
+export const STALE_POST_TEXT =
+  'Your last post did not report back, so it may or may not have been posted. Check your profile on dev-null.sh before posting it again.'
+export const POST_FAILED_TEXT = 'Claude Code refused a step, so nothing was posted. Press Enter to try again.'
+
+/** Whether a post is in flight at `nowMs`: one started, not finished, and not yet stale. */
+export function isSending(post: PanePost, nowMs: number): boolean {
+  const { sending } = post
+
+  return sending !== null && nowMs >= sending.startedAtMs && nowMs - sending.startedAtMs < POST_STALE_MS
+}
+
+/**
+ * The input after a submit of `body` asked to post: a post named `token`, or
+ * the current one unchanged while another is in flight. The body is kept as
+ * the draft until the post went through. What the last submit came to is
+ * shown until this one: closing and opening the pane keeps it, so a post that
+ * ended while the pane was closed still says how.
+ */
+export function startPost(current: PanePost, token: string, body: string, nowMs: number): PanePost {
+  if (isSending(current, nowMs)) return current
+
+  return { round: current.round + 1, draft: body, sending: { token, startedAtMs: nowMs }, outcome: null }
+}
+
+/** The input after the post named `token` came to `result`; any other post's end changes nothing. */
+export function finishPost(current: PanePost, token: string, result: PostResult): PanePost {
+  if (current.sending === null || current.sending.token !== token) return current
+  const outcome = { committed: result.committed, lines: [...result.lines] }
+
+  return { round: current.round + 1, draft: result.committed === null ? current.draft : '', sending: null, outcome }
+}
+
+/** The input after a submit refused before anything ran: `lines` say why, `draft` is what the field holds again. */
+export function refusePost(current: PanePost, draft: string, lines: readonly string[], nowMs: number): PanePost {
+  if (isSending(current, nowMs)) return current
+
+  return { round: current.round + 1, draft, sending: null, outcome: { committed: null, lines: [...lines] } }
+}
+
+/** What the pane draws under its rule, on the surface that posts. */
+export type PostView =
+  | { kind: 'sending' }
+  | {
+      kind: 'field'
+      /** The field's key: a new one after each submit, so it starts from `draft`. */
+      key: string
+      draft: string
+      /** When the last post went through: its link on the surface, undefined when its parts fail the patterns. */
+      committed: { href: string | undefined } | undefined
+      /** The mod's own lines about the last submit, one row each. */
+      lines: string[]
+      /** Whether the lines tell of a submit that did not post. */
+      isProblem: boolean
+    }
+
+export function postView(post: PanePost, nowMs: number, surface: RenderSurface): PostView {
+  if (isSending(post, nowMs)) return { kind: 'sending' }
+  const field = { kind: 'field', key: `commit-${post.round}`, draft: post.draft } as const
+  // A post still marked as sending is one that never reported back.
+  if (post.sending !== null) return { ...field, committed: undefined, lines: [STALE_POST_TEXT], isProblem: true }
+  const { outcome } = post
+  if (outcome === null) return { ...field, committed: undefined, lines: [], isProblem: false }
+  const lines = outcome.lines.flatMap(line => line.split('\n'))
+  const { committed } = outcome
+  if (committed === null) return { ...field, committed: undefined, lines, isProblem: true }
+
+  return { ...field, committed: { href: commitLink(committed.username, committed.id, surface) }, lines, isProblem: false }
 }

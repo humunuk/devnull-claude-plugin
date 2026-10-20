@@ -8,6 +8,7 @@ import {
   OFF_NOT_SAVED_TEXT,
   OFF_TEXT,
   ON_TEXT,
+  PANE_NOT_CLOSED_TEXT,
 } from '../hooks/alerts'
 import { notTypedText } from '../hooks/lib/command'
 import { USERNAME, apiCommit, apiList, commitId, shortHashOf } from './fixtures/commits'
@@ -61,18 +62,15 @@ const seen = (counts: Record<number, number | readonly [number, number]>) => ({
 const hashOf = (n: number) => shortHashOf(commitId(n))
 
 /**
- * The row's `open` link to commit `n`. The desktop surface draws a link whose
- * address holds a raw `@` as plain text (2.1.304: "its href holds a raw @, and
- * the desktop surface is sent no other link"), which every commit link does.
+ * The row's `open` link to commit `n`, as the surface takes it: the raw `@`
+ * on the terminal, `%40` on desktop, which draws a link whose address holds a
+ * raw `@` as plain text (2.1.304: "its href holds a raw @, and the desktop
+ * surface is sent no other link").
  */
 async function expectOpenLink(ui: { surface: string; find: (query: { type: string; text?: string }) => Promise<{ props: Record<string, unknown> } | undefined> }, n: number): Promise<void> {
   const link = await ui.find({ type: 'Link' })
-  if (ui.surface === 'terminal') {
-    expect(link?.props).toEqual({ href: `https://dev-null.sh/@${USERNAME}/commits/${commitId(n)}`, label: 'open \u2197' })
-  } else {
-    expect(link).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: 'open \u2197' })).toBeDefined()
-  }
+  const at = ui.surface === 'terminal' ? '@' : '%40'
+  expect(link?.props).toEqual({ href: `https://dev-null.sh/${at}${USERNAME}/commits/${commitId(n)}`, label: 'open \u2197' })
 }
 
 describe('the first poll for an account', () => {
@@ -217,7 +215,7 @@ describe('a rise in a replies count', () => {
 
     for (const surface of SURFACES) {
       const ui = await $.ui.mount({ ...BAND, surface })
-      expect(await ui.findAll({ type: surface === 'terminal' ? 'Link' : 'Text', text: 'open \u2197' })).toHaveLength(5)
+      expect(await ui.findAll({ type: 'Link', text: 'open \u2197' })).toHaveLength(5)
       expect((await ui.find({ type: 'Text', text: /more/ }))?.text).toBe('and 2 more')
       expect(await ui.findAll({ type: 'Button' })).toHaveLength(1)
       await ui.unmount()
@@ -672,6 +670,18 @@ describe('/devnull off and /devnull on', () => {
 
     const text = await devnullCommand($, 'off')
     expect(text).toBe(OFF_NOT_SAVED_TEXT)
+    expect(text).not.toContain('/home/someone')
+    await world.clock.advance(10 * MINUTE)
+    expect(world.requests).toHaveLength(2)
+  })
+
+  test('off that cannot close the pane still stops, and says so', async ($, on) => {
+    const world = alertsWorld(on, { arePanesBroken: true })
+    await startSession($)
+    await world.clock.settle()
+
+    const text = await devnullCommand($, 'off')
+    expect(text).toBe(`${OFF_TEXT}\n${PANE_NOT_CLOSED_TEXT}`)
     expect(text).not.toContain('/home/someone')
     await world.clock.advance(10 * MINUTE)
     expect(world.requests).toHaveLength(2)

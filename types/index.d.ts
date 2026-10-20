@@ -67,22 +67,26 @@ declare module 'claude-code' {
       /** null until the first list arrives. */
       recent: RecentCommits | null
       /**
-       * Where the pane's load of the person's commits stands (hooks/pane.tsx).
+       * Where the pane's load of the person's commits stands (hooks/pane-core.ts).
        * The commits themselves are in `recent`; `page` is the ids of the last
-       * page fetched, newest first, which are the ones the pane draws (kept
-       * through a reload and a failure). `token` names the one load in flight;
-       * `retryAtMs` holds the next load back after a 429 with Retry-After.
-       * No text from dev-null.sh is kept here, only a status number.
+       * page fetched, newest first, which are the ones the pane draws, and
+       * `fetchedAtMs` when that page arrived (both kept through a reload and a
+       * failure; null before any page). The reply alerts also keep `recent`
+       * current, so the pane's "updated" age is its own fetch's, from here.
+       * `token` names the one load in flight; `retryAtMs` holds the next load
+       * back after a 429 with Retry-After. No text from dev-null.sh is kept
+       * here, only a status number.
        */
       pane:
         | { kind: 'idle' }
         | { kind: 'not-set-up' }
-        | { kind: 'loading'; username: string; token: string; startedAtMs: number; page: string[] }
-        | { kind: 'ready'; username: string; page: string[] }
+        | { kind: 'loading'; username: string; token: string; startedAtMs: number; page: string[]; fetchedAtMs: number | null }
+        | { kind: 'ready'; username: string; page: string[]; fetchedAtMs: number }
         | {
             kind: 'failed'
             username: string | null
             page: string[]
+            fetchedAtMs: number | null
             problem:
               | { kind: 'status'; status: number; retryAfterSeconds: number | null }
               | { kind: 'network' }
@@ -90,6 +94,22 @@ declare module 'claude-code' {
               | { kind: 'local' }
             retryAtMs: number | null
           }
+      /**
+       * The pane's input (hooks/pane.tsx). `round` counts the submits: the
+       * field is drawn as `commit-<round>`, so the one drawn after a submit is
+       * a new field that starts from `draft`, the person's own text, kept when
+       * a post fails and '' after one went through. `sending` is the one post
+       * in flight. `outcome` is what the last submit came to: the mod's own
+       * lines, and the commit dev-null.sh confirmed (its username and id
+       * checked by the patterns links are built from), or null. No text from
+       * dev-null.sh is kept here.
+       */
+      panePost: {
+        round: number
+        draft: string
+        sending: { token: string; startedAtMs: number } | null
+        outcome: { committed: { username: string; id: string } | null; lines: string[] } | null
+      }
       /** The reply alerts; see hooks/alerts.tsx. */
       replyAlerts: ReplyAlerts
     }

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { commitUrl, profileUrl } from '../hooks/lib/links'
+import { commitLink, commitUrl, profileUrl } from '../hooks/lib/links'
 import { commitId } from './fixtures/commits'
 
 describe('links', () => {
@@ -29,6 +29,31 @@ describe('links', () => {
       'a1b2c3d',
     ]) {
       expect(commitUrl('some-user', bad)).toBeUndefined()
+      for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) expect(commitLink('some-user', bad, surface)).toBeUndefined()
+    }
+  })
+})
+
+describe('the link a surface draws', () => {
+  test('writes the @ as %40 on every surface but the terminal, whose links draw a raw @ as plain text', () => {
+    for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+      const link = commitLink('Some-User', commitId(1), surface)
+      expect(link).toBe(`https://dev-null.sh/%40Some-User/commits/${commitId(1)}`)
+      // The form the engine holds those surfaces' links to: canonical, printable ASCII, no raw @.
+      expect(link === undefined ? undefined : new URL(link).href).toBe(link)
+      expect(link).not.toContain('@')
+    }
+  })
+
+  test('keeps the @ on the terminal, so an address printed in place of a link reads normally', () => {
+    expect(commitLink('Some-User', commitId(1), 'terminal')).toBe(`https://dev-null.sh/@Some-User/commits/${commitId(1)}`)
+  })
+
+  test('is not built from a username or id that fails its pattern, on any surface', () => {
+    for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+      expect(commitLink('some user', commitId(1), surface)).toBeUndefined()
+      expect(commitLink('evil.example', commitId(1), surface)).toBeUndefined()
+      expect(commitLink('some-user', 'not-a-uuid', surface)).toBeUndefined()
     }
   })
 })

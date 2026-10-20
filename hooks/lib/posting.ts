@@ -91,6 +91,14 @@ export function commitRequest(payload: string, signature: string): HttpInit {
   }
 }
 
+/**
+ * What a post came to, as both the command and the pane show it: the commit
+ * dev-null.sh confirmed (its username and id passed the patterns links are
+ * built from), or null, and the mod's own lines to show with it. No text from
+ * dev-null.sh is in it.
+ */
+export type PostResult = { committed: { username: string; id: string } | null; lines: string[] }
+
 export type PostOutcome =
   | { kind: 'committed'; committed: Committed }
   | { kind: 'unexpected-201' }
@@ -126,6 +134,8 @@ export type Subcommand = { name: string; description: string }
 /** The subcommands completed after `/devnull `, with the line beside each. */
 export const SUBCOMMANDS: readonly Subcommand[] = [
   { name: 'commit', description: 'post a commit, signed with your SSH key' },
+  { name: 'off', description: 'stop checking for new replies, and close the pane' },
+  { name: 'on', description: 'check for new replies again' },
   { name: 'reply', description: 'reply to a commit by its hash or link' },
   { name: 'setup', description: 'choose your signing key and /dev/null username' },
 ]

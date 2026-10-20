@@ -1,10 +1,12 @@
 // The world beneath the mod in a test: an SSH agent answering `ssh-add -L`,
-// dev-null.sh answering the key lookup, and a store that records each write
-// (or refuses it). Each hook records what the mod asked, so a test can show
-// what was (not) run, sent or kept.
+// dev-null.sh answering the key lookup and the profile lookup, and a store
+// that records each write (or refuses it). Each hook records what the mod
+// asked, so a test can show what was (not) run, sent or kept.
 
 import type { HttpInit, HttpResponse, On, ProcessRunInit, PromptOrigin } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
+
+import { apiProfile } from './fixtures/profiles'
 
 /** What `ssh-add -L` does: exits with this code and output, or never runs. */
 export type Agent = { exitCode: number; stdout: string } | 'cannot-run'
@@ -12,13 +14,23 @@ export type Agent = { exitCode: number; stdout: string } | 'cannot-run'
 /** What the key lookup gets: an answer, or a request that fails. */
 export type Server = { status: number; text: string; headers?: Record<string, string> } | 'unreachable'
 
+/** What the profile lookup gets: as Server, or (the default) a 200 with the profile of the username asked for. */
+export type Profile = Server | 'echo'
+
+export const PROFILE_URL = 'https://dev-null.sh/api/v1/users/'
+
 export type World = {
   runs: { argv: readonly string[]; init: ProcessRunInit | undefined }[]
   requests: { url: string; init: HttpInit | undefined }[]
   writes: { key: string; value: unknown }[]
 }
 
-export function world(on: On, agent: Agent, server?: Server, options: { isStoreBroken?: boolean } = {}): World {
+export function world(
+  on: On,
+  agent: Agent,
+  server?: Server,
+  options: { isStoreBroken?: boolean; profile?: Profile } = {},
+): World {
   const runs: World['runs'] = []
   const requests: World['requests'] = []
   const writes: World['writes'] = []
@@ -41,19 +53,26 @@ export function world(on: On, agent: Agent, server?: Server, options: { isStoreB
 
   on('http.fetch', (_, e) => {
     requests.push({ url: e.url, init: e.init })
-    if (server === undefined) return { deny: 'this test sends nothing' }
-    if (server === 'unreachable') return { deny: 'getaddrinfo ENOTFOUND dev-null.sh' }
+    const answer = e.url.startsWith(PROFILE_URL) ? profileAnswer(e.url, options.profile ?? 'echo') : server
+    if (answer === undefined) return { deny: 'this test sends nothing' }
+    if (answer === 'unreachable') return { deny: 'getaddrinfo ENOTFOUND dev-null.sh' }
     const response: HttpResponse = {
-      status: server.status,
-      ok: server.status >= 200 && server.status < 300,
-      headers: server.headers ?? {},
-      text: server.text,
+      status: answer.status,
+      ok: answer.status >= 200 && answer.status < 300,
+      headers: answer.headers ?? {},
+      text: answer.text,
     }
 
     return { value: response }
   })
 
   return { runs, requests, writes }
+}
+
+function profileAnswer(url: string, profile: Profile): Server {
+  if (profile !== 'echo') return profile
+
+  return { status: 200, text: JSON.stringify(apiProfile(url.slice(PROFILE_URL.length))) }
 }
 
 /** Runs `/devnull <args>` as the session would, from `origin`. */
