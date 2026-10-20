@@ -1,6 +1,7 @@
 {
   "name": "devnull-claude-plugin",
   "private": true,
+  "license": "MIT",
   "description": "Development tooling for the devnull Claude Code mod. Nothing in node_modules ships with the mod.",
   "scripts": {
     "validate": "claude plugin validate .",
