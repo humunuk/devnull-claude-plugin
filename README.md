@@ -22,10 +22,10 @@ claude plugin install devnull --marketplace humunuk/devnull-claude-plugin
 
 ### Requirements
 
-- Claude Code in a terminal. The mod runs `ssh-keygen` and `ssh-add`, which a mod can only do in the CLI. It was built and tested on Claude Code 2.1.304.
+- Claude Code in a terminal. The mod runs a few programs on your machine (listed under [Security and privacy](#security-and-privacy)), which a mod can only do in the CLI. It was built and tested on Claude Code 2.1.304, and its tests pass on 2.1.306.
 - OpenSSH 8.1 or later (`ssh-keygen -Y sign`).
 - An Ed25519 key, or an RSA key of at least 2048 bits, that is on your GitHub account and loaded in your SSH agent (`ssh-add -l` lists it).
-- A /dev/null account: sign in on [dev-null.sh](https://dev-null.sh) with GitHub at least once after adding the key there.
+- A /dev/null account: sign in on [dev-null.sh](https://dev-null.sh) with GitHub at least once after adding the key there. A new account must make its first commit on the dev-null.sh website, which shows the commit rules first, before it can post from anywhere else, this mod included. Accounts that existed when dev-null.sh added this rule are not affected.
 
 ## Set up
 
@@ -51,6 +51,8 @@ The mod checks with dev-null.sh that the key is on your GitHub account and that 
 | `/devnull off`, `/devnull on` | Stops and resumes the reply alerts; `off` also closes the pane. |
 | `/devnull setup` | Chooses the signing key and username. |
 
+dev-null.sh's [terms](https://dev-null.sh/terms) do not allow posting AI-generated content as your own; sharing code or output from a tool is fine if you say so. When a post holds text or code Claude wrote, say that in the post.
+
 **The pane** has two tabs:
 
 - **Mine**: your newest commits with their stars and replies, `+N new` on the ones that got new replies, and a `New replies` section for your replies in threads that got answers. At the bottom, type a commit and press Enter to post it.
@@ -69,6 +71,8 @@ Reading the text of replies, mentions, and the Latest and Trending feeds need a 
 The mod signs your posts with your SSH key and runs on your machine, so it is built to do as little as possible:
 
 - **Your keys stay where they are.** It signs only through your SSH agent, with the one key you chose. It never reads `~/.ssh` or any private key, and it sends dev-null.sh only that one public key.
+- **What it runs on your machine.** `/devnull setup` runs `ssh-add -L` to list your agent's public keys. Each post runs `ssh-add -L` to check the chosen key is still loaded, makes a fresh private folder in your temporary directory with `mktemp -d`, writes the chosen key's public line (nothing secret) to `signing.pub` in it, and runs `ssh-keygen -Y sign` on the text it sends: the time, a random one-time value, the commit you reply to (if any) and your post. Then it removes that one file with `rm` and the empty folder with `rmdir`, and never deletes anything recursively. `ssh-keygen` takes the key only as a file; with no private key next to that file it signs through your agent, and never reads a private key file or asks for a passphrase. If your agent asks you to confirm or unlock the key, that prompt is your agent's, as with any other use of the key. A mod cannot make a fresh private folder with a name nobody can guess beforehand, which keeps another user of the machine from preparing it or placing a `signing` key beside `signing.pub`, and cannot delete a file; hence `mktemp`, `rm` and `rmdir`.
+- **What it writes.** Its store, a JSON file of its own under your Claude Code configuration directory, keeps the chosen key's fingerprint and public line, your username, the reply counts it has already shown you, and whether reply alerts are on. The only other file is that `signing.pub`. Pressing Esc does not skip its cleanup, but a folder, empty or holding only that public key file, can stay in your temporary directory when a post is cut off (Claude Code quits, the session ends or the mod reloads), when `mktemp` prints a folder name the mod does not recognise, or when `rm` or `rmdir` fails or times out. In the last two cases the mod tells you.
 - **Only you post.** `/devnull commit`, `reply` and `setup` run only when you type them at the prompt. Claude cannot post: the mod gives it no tool for that, refuses commands sent by other plugins, scripts or Remote Control, and hides any suggested prompt that starts with `/devnull`. The pane's commit field is shown only in the terminal.
 - **Other people's posts stay out of Claude's view.** Posts and the site's answers are shown only in the pane, the pop-up and the status line. What the commands print, which Claude does read, holds only the mod's own messages, your saved username, a commit id, HTTP status codes and wait times as numbers, and, from `/devnull setup`, the fingerprints and comments of the keys in your SSH agent. The reply suggestions show the hashes and usernames of people you follow, never their posts; Claude Code's documentation does not say whether Claude sees those suggestions.
 - **One host, documented endpoints.** It talks only to `https://dev-null.sh`, one request at a time for the pane and one for the reply alerts, and when the site asks it to slow down, the whole mod waits as long as asked. It backs off when the site is failing.
