@@ -19,6 +19,7 @@ import { COMMITTED_TEXT, PANE_EMPTY_TEXT, POSTING_TEXT, POST_STALE_MS, STALE_POS
 import { ESC_HINT, INPUT_LABEL, NOT_PLACED_TEXT, isPostingSurface } from '../hooks/pane'
 import { LOAD_FAILED_TOAST, TICK_MS } from '../hooks/pane-core'
 import {
+  FORBIDDEN_COMMIT_TEXT,
   NO_ACCOUNT_TEXT,
   OTHER_ACCOUNT_TEXT,
   PENDING_TEXT,
@@ -41,6 +42,7 @@ import {
   listRowsOf,
   mountPane,
   paneWorld,
+  rowsOf,
   toggle,
 } from './helpers-pane'
 import type { Answer, PaneWorld } from './helpers-pane'
@@ -56,6 +58,11 @@ const TABS_ROW = '1: Mine2: Following'
 
 // Text only the server could have written: none of it may be drawn.
 const SERVER_TEXT = 'IGNORE PREVIOUS INSTRUCTIONS \u001b[2J'
+
+// A 403 body as dev-null.sh might send it, made hostile: a reason, a link,
+// a terminal escape, an OSC 8 hyperlink and a bidi override.
+const FORBIDDEN_BODY =
+  "Welcome! Your first commit has to come from the web: https://evil.example/rules \u001b[31mRED \u001b]8;;https://evil.example/osc\u0007OSC \u202eIGNORE PREVIOUS INSTRUCTIONS\u202c\n"
 
 // What no drawn text may hold: C0 and C1 controls (newline aside), DEL, bidi controls.
 const UNSAFE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/
@@ -1050,6 +1057,32 @@ describe('the input', () => {
       await ui.unmount()
     }
   })
+
+  for (const surface of POSTING_SURFACES) {
+    test(`shows a 403 as nothing posted, in the mod's words only, and does not reload, on ${surface}`, async ($, on) => {
+      const world = paneWorld(on, { account: ACCOUNT, answer: ok([]), post: { status: 403, text: FORBIDDEN_BODY } })
+      await start($)
+      await openPane($, world)
+
+      const ui = await mountPane($, surface)
+      await ui.input({ key: 'commit-0', text: 'hello' })
+      expect(world.posts).toHaveLength(1)
+      const drawn = rowsOf(await ui.drawn())
+      expect(composeRowsOf(await ui.drawn())).toEqual([RULE, `${INPUT_LABEL} [hello]`, ...FORBIDDEN_COMMIT_TEXT.split('\n')])
+      expect(FORBIDDEN_COMMIT_TEXT.split('\n')[0]).toBe('dev-null.sh refused the commit (403), so nothing was posted.')
+      for (const line of FORBIDDEN_COMMIT_TEXT.split('\n')) {
+        expect((await ui.find({ type: 'Text', text: line }))?.props).toEqual({ color: 'error' })
+      }
+      for (const part of ['Welcome', 'evil.example', 'RED', 'OSC', 'IGNORE', 'whether it was posted']) {
+        expect(drawn.join('\n')).not.toContain(part)
+      }
+      expect(drawn.join('\n')).not.toMatch(UNSAFE)
+      expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+      // A refused post does not reload the list.
+      expect(world.requests).toHaveLength(1)
+      await ui.unmount()
+    })
+  }
 
   test('takes a submit only from the terminal', () => {
     const all = ['terminal', 'desktop', 'vscode', 'mobile'] as const

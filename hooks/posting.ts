@@ -115,6 +115,22 @@ export const UNAUTHORIZED_TEXT = [
   'Usually your key is no longer on your GitHub account, or your clock is more than 5 minutes off. Check both, then post again; run /devnull setup if you changed keys.',
 ].join('\n')
 
+// Every 403 dev-null.sh sends to a post comes before the commit is made, and
+// its plain-text reason is never shown (security rule 2), so the three causes
+// are named in fixed words.
+const FORBIDDEN_CAUSES =
+  'A new account makes its first commit on https://dev-null.sh, after reading the commit rules. An account in a timeout, or banned, cannot post.'
+
+export const FORBIDDEN_COMMIT_TEXT = [
+  'dev-null.sh refused the commit (403), so nothing was posted.',
+  FORBIDDEN_CAUSES,
+].join('\n')
+
+export const FORBIDDEN_REPLY_TEXT = [
+  'dev-null.sh refused the reply (403), so nothing was posted.',
+  FORBIDDEN_CAUSES,
+].join('\n')
+
 export const NOT_FOUND_TEXT =
   'dev-null.sh answered 404 Not Found to the post, so nothing was posted. Its posting address may have changed: check for an update of this mod.'
 
@@ -445,6 +461,8 @@ function postedResult(outcome: PostOutcome, name: PostingName, account: Account)
       return notPosted(unexpectedText(201, account.username))
     case 'unauthorized':
       return notPosted(UNAUTHORIZED_TEXT)
+    case 'forbidden':
+      return notPosted(name === 'commit' ? FORBIDDEN_COMMIT_TEXT : FORBIDDEN_REPLY_TEXT)
     case 'not-found':
       return notPosted(NOT_FOUND_TEXT)
     case 'refused':

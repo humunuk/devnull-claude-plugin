@@ -2,12 +2,18 @@
 // means, and where `/devnull` completions apply. Pure: hooks/posting.ts runs
 // the commands and sends the request.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6, the body rule at 230c004),
-// `POST /api/cli/commits`: AuthenticateSshSignature answers 401 when the
-// signature, payload, timestamp or nonce is refused, or the key is on no
-// /dev/null user's GitHub account (SignedCommits, SshSignatures).
-// ThrottleCommits answers 429 with `Retry-After` past 10 commits a minute,
-// counted across every way of posting. CreateCliCommitRequest answers 422 for
+// Upstream (nunomaduro/dev-null.sh at 3e55ca6, the body rule at 230c004, the
+// 403s at 9860a9e), `POST /api/cli/commits`: AuthenticateSshSignature answers
+// 401 when the signature, payload, timestamp or nonce is refused, or the key
+// is on no /dev/null user's GitHub account (SignedCommits, SshSignatures).
+// Three middlewares answer 403 before any commit is made (#898):
+// AuthenticateSshSignature for a banned account, PreventPostingInTimeout for
+// an account in a timeout, and RequireCommitRules for an account that has not
+// yet made its first commit on the web (accounts that existed before #898
+// count as having done so: its migration set commit_rules_accepted_at on all
+// of them). ThrottleCommits answers 429 with `Retry-After` past 10 commits a
+// minute, counted across every way of posting. CreateCliCommitRequest answers
+// 422 for
 // a body CreateCommitRequest::bodyRules refuse (empty, over 40000 code points
 // raw, a link outside code over 2048 characters, or over 4000 characters
 // with each link outside code counted as at most 23; see lib/payload.ts) and for a reply reference that
@@ -106,6 +112,7 @@ export type PostOutcome =
   | { kind: 'committed'; committed: Committed }
   | { kind: 'unexpected-201' }
   | { kind: 'unauthorized' }
+  | { kind: 'forbidden' }
   | { kind: 'not-found' }
   | { kind: 'refused' }
   | { kind: 'rate-limited'; retryAfterSeconds: number | undefined }
@@ -124,6 +131,7 @@ export function readPostAnswer(response: Pick<HttpResponse, 'status' | 'headers'
     return committed === undefined ? { kind: 'unexpected-201' } : { kind: 'committed', committed }
   }
   if (status === 401) return { kind: 'unauthorized' }
+  if (status === 403) return { kind: 'forbidden' }
   if (status === 404) return { kind: 'not-found' }
   if (status === 422) return { kind: 'refused' }
   if (status === 429) return { kind: 'rate-limited', retryAfterSeconds: retryAfterSeconds(response.headers['retry-after']) }

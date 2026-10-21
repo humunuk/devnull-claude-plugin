@@ -26,6 +26,7 @@ describe('the answer to a posted commit', () => {
 
   test('is told apart by status', () => {
     expect(answer(401)).toEqual({ kind: 'unauthorized' })
+    expect(answer(403, 'Your account is banned from /dev/null.\n')).toEqual({ kind: 'forbidden' })
     expect(answer(404)).toEqual({ kind: 'not-found' })
     expect(answer(422)).toEqual({ kind: 'refused' })
     expect(answer(429, '', { 'retry-after': '12' })).toEqual({ kind: 'rate-limited', retryAfterSeconds: 12 })
