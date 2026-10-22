@@ -2,7 +2,8 @@
 // setup. Pure: the request is built and the answer read here, and the caller
 // sends it.
 //
-// The public API (nunomaduro/dev-null.sh README, "Public API"):
+// The public API (dev-null-sh/dev-null.sh KNOWLEDGE_BASE.md, "Public read API
+// and Atom feeds"):
 // `GET /api/v1/users/{username}` answers 200 with the profile under `data`,
 // `username` among its fields (shape read live on 2026-10-20), and 404 when
 // no user has that username. The username is matched exactly, case

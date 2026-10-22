@@ -2,7 +2,7 @@
 // with `?replies=1`: its body is checked field by field and reduced to what the
 // mod uses (security rule 5). Pure: the caller fetches it.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6): UserCommitController answers
+// Upstream (dev-null-sh/dev-null.sh at 3e55ca6): UserCommitController answers
 // a guest with CommitResource items under `data`. `short_hash` is the last 7
 // hex characters of the id; `created_at` is `toIso8601ZuluString()`, so
 // `YYYY-MM-DDTHH:MM:SSZ`; `parent_id` is the parent's id, or null. Fields the

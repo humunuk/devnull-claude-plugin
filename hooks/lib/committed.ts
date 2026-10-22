@@ -1,6 +1,6 @@
 // dev-null.sh's answer to a posted commit. Pure: the caller sends the commit.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6): Cli\CommitController answers
+// Upstream (dev-null-sh/dev-null.sh at 3e55ca6): Cli\CommitController answers
 // 201, `text/plain`, with `Committed: <url>`, then ` (pending review, only you
 // can see it until it is approved)` when the commit waits for review, then a
 // newline. The url is the `commit.show` route, `@{user:username}/commits/{commit}`

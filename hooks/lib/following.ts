@@ -4,10 +4,11 @@
 // hooks/pane-core.ts fetches and keeps the round, hooks/pane.tsx draws it.
 //
 // The follow list is `GET /api/v1/users/{username}/following`: the people the
-// user follows, newest follow first, 30 a page (README of nunomaduro/dev-null.sh,
-// "Public API"). Read live on 2026-10-20, its body is `data`, one profile per
-// item, beside `links` and `meta`. The mod reads each item's `username` alone
-// and copies nothing else (security rule 5).
+// user follows, newest follow first, 30 a page (KNOWLEDGE_BASE.md of
+// dev-null-sh/dev-null.sh, "Public read API and Atom feeds"). Read live on
+// 2026-10-20, its body is `data`, one profile per item, beside `links` and
+// `meta`. The mod reads each item's `username` alone and copies nothing else
+// (security rule 5).
 
 import type { PluginState, RenderSurface } from 'claude-code'
 
@@ -32,7 +33,7 @@ export const FOLLOWED_MAX = 20
 /** The most commits the tab draws. */
 export const FOLLOWING_DRAWN_MAX = 30
 
-/** The follow list's page size (README, "Public API"): a longer list is not one the endpoint answers. */
+/** The follow list's page size (KNOWLEDGE_BASE.md, "Public read API and Atom feeds"): a longer list is not one the endpoint answers. */
 export const FOLLOW_PAGE_MAX = 30
 
 /**

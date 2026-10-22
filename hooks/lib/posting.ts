@@ -2,7 +2,7 @@
 // means, and where `/devnull` completions apply. Pure: hooks/posting.ts runs
 // the commands and sends the request.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6, the body rule at 230c004, the
+// Upstream (dev-null-sh/dev-null.sh at 3e55ca6, the body rule at 230c004, the
 // 403s at 9860a9e), `POST /api/cli/commits`: AuthenticateSshSignature answers
 // 401 when the signature, payload, timestamp or nonce is refused, or the key
 // is on no /dev/null user's GitHub account (SignedCommits, SshSignatures).

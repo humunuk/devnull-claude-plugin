@@ -2,7 +2,7 @@
 // account of a /dev/null user. Pure: the request is built and the answer read
 // here, and the caller sends it.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6): KeyLookupController answers
+// Upstream (dev-null-sh/dev-null.sh at 3e55ca6): KeyLookupController answers
 // 200 with the key's canonical `<type> <base64>` and a newline;
 // CreateKeyLookupRequest answers 404 when no line it was sent is a known key;
 // the route is throttled to 60 a minute.

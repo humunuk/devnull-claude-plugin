@@ -2,7 +2,7 @@
 // anything is signed. Pure: the caller draws the random bytes, reads the clock
 // and runs ssh-keygen.
 //
-// Upstream (nunomaduro/dev-null.sh at 3e55ca6, the body rule at 230c004):
+// Upstream (dev-null-sh/dev-null.sh at 3e55ca6, the body rule at 230c004):
 // SignedCommits reads `<unix seconds>\n<nonce>\n<reply reference or
 // empty>\n<body>`, accepts a time within 300 s of its clock and spends each
 // nonce once. After CommitBodies::normalize and mb_trim, CreateCommitRequest's
