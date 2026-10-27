@@ -101,11 +101,12 @@ describe('the commit list', () => {
       apiCommit(1, { replies_count: 2 ** 60 }),
       apiCommit(1, { author: null }),
       apiCommit(1, { author: 'some-user' }),
-      apiCommit(1, withAuthor({ username: 'some user' })),
-      apiCommit(1, withAuthor({ username: 'some\u202euser' })),
-      apiCommit(1, withAuthor({ username: '\u001b[31msome-user' })),
-      apiCommit(1, withAuthor({ username: 'x'.repeat(40) })),
-      apiCommit(1, withAuthor({ username: undefined })),
+      apiCommit(1, withAuthor({ handle: 'some user' })),
+      apiCommit(1, withAuthor({ handle: 'some\u202euser' })),
+      apiCommit(1, withAuthor({ handle: '\u001b[31msome-user' })),
+      apiCommit(1, withAuthor({ handle: 'x'.repeat(40) })),
+      apiCommit(1, withAuthor({ handle: undefined })),
+      apiCommit(1, withAuthor({ handle: 7 })),
       withoutField('id'),
       withoutField('short_hash'),
       withoutField('body'),
@@ -120,6 +121,19 @@ describe('the commit list', () => {
       expect(parseCommitList(json(apiList([apiCommit(2), bad])))).toBeUndefined()
       expect(readCommitList(apiList([bad]))).toBeUndefined()
     }
+  })
+
+  test('is refused when an author names itself under `username` and not `handle`, the field upstream #1179 removed', () => {
+    const author = apiCommit(1)['author']
+    // JSON leaves the undefined `handle` out, as the old answer had none.
+    const oldAuthor = apiCommit(1, { author: { ...(typeof author === 'object' ? author : {}), handle: undefined, username: USERNAME } })
+
+    expect(json(oldAuthor)).not.toContain('"handle"')
+    expect(parseCommitList(json(apiList([oldAuthor])))).toBeUndefined()
+    expect(readCommitList(apiList([oldAuthor]))).toBeUndefined()
+    expect(parseCommitList(json(apiList([apiCommit(2), oldAuthor])))).toBeUndefined()
+    // Both fields, `handle` valid: `handle` alone is read.
+    expect(parseCommitList(json(apiList([apiCommit(1, { author: { handle: USERNAME, username: 'other user' } })])))?.[0]?.username).toBe(USERNAME)
   })
 
   test('is refused when the body is not a list', () => {

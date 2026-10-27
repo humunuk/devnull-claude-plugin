@@ -1,6 +1,8 @@
 // Follow list bodies in the shape `GET /api/v1/users/{username}/following`
-// answered on 2026-10-20 (read once), and commit lists of the people followed.
-// Every value is invented; no real person's data is kept here.
+// answered on 2026-10-20 (read once), with each name under `handle` as
+// answered on 2026-10-27 (upstream #1179 removed `username`), and commit lists
+// of the people followed. Every value is invented; no real person's data is
+// kept here.
 
 import { USERNAME, apiCommit } from './commits'
 
@@ -19,7 +21,7 @@ export function commitsUrlOf(username: string): string {
 /** One follow list item with every field the API sends, read or not. */
 export function apiPerson(username: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    username,
+    handle: username,
     id: '0190a1b2-0000-7000-8000-0000000000aa',
     name: 'An Invented Person',
     avatar_url: 'https://avatars.example.invalid/person.png',
@@ -46,5 +48,5 @@ export function apiFollowList(items: readonly unknown[]): Record<string, unknown
 
 /** Commit `n` of the list item shape, by `username`. */
 export function apiCommitBy(username: string, n: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return apiCommit(n, { author: { username, name: 'An Invented Person' }, ...overrides })
+  return apiCommit(n, { author: { handle: username, name: 'An Invented Person' }, ...overrides })
 }

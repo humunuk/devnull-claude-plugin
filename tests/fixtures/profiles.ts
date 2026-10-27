@@ -1,13 +1,14 @@
 // Profile bodies in the shape `GET /api/v1/users/{username}` answered on
-// 2026-10-20 (read once, for a public profile). Every value is invented; no
-// real person's data is kept here.
+// 2026-10-27 (read once, for a public profile): the name is under `handle`
+// (upstream #1179 removed `username`). Every value is invented; no real
+// person's data is kept here.
 
 /** A whole response body: the profile of `username`, with every field the API sends. */
 export function apiProfile(username: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     data: {
       id: '0190a1b2-0000-7000-8000-000000000001',
-      username,
+      handle: username,
       name: 'Some User',
       avatar_url: 'https://avatars.example.invalid/some-user.png',
       bio: 'an invented bio',

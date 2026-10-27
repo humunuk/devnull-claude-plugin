@@ -319,7 +319,12 @@ describe('/devnull setup <key> <username>, the username', () => {
     '{"data":"some-user"}',
     '{"data":["some-user"]}',
     '{"data":{"username":5}}',
+    '{"data":{"handle":5}}',
     '{"data":{"name":"some-user"}}',
+    // The field upstream #1179 removed: a profile under it alone is not read.
+    '{"data":{"username":"some-user"}}',
+    // JSON leaves the undefined `handle` out, as the old answer had none.
+    JSON.stringify(apiProfile('some-user', { handle: undefined, username: 'some-user' })),
   ]) {
     test(`is refused when the 200 is ${JSON.stringify(body)}, not exactly a profile`, async ($, on) => {
       const { writes } = world(on, AGENT, FOUND_ED25519, { profile: { status: 200, text: body } })

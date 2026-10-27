@@ -7,8 +7,9 @@
 // user follows, newest follow first, 30 a page (KNOWLEDGE_BASE.md of
 // dev-null-sh/dev-null.sh, "Public read API and Atom feeds"). Read live on
 // 2026-10-20, its body is `data`, one profile per item, beside `links` and
-// `meta`. The mod reads each item's `username` alone and copies nothing else
-// (security rule 5).
+// `meta`. Each item is a UserResource, whose name field is `handle` (at
+// 85376fd: #1179 removed its `username`; read live on 2026-10-27). The mod
+// reads each item's `handle` alone and copies nothing else (security rule 5).
 
 import type { PluginState, RenderSurface } from 'claude-code'
 
@@ -98,12 +99,12 @@ export function parseFollowList(text: string): (string | null)[] | undefined {
 /**
  * The people in a parsed follow list, or undefined when the body or any one
  * item is not what the mod expects, a name comes twice, or the list is longer
- * than a page: there is no partial list. A username that is a string but
+ * than a page: there is no partial list. A `handle` that is a string but
  * fails the username pattern is null: dev-null.sh renames an account whose
  * GitHub handle someone else took to `_renamed-<id>`
- * (app/Actions/UpdateStaleUsernames.php at 230c004), and such a person is
- * left out and counted, never asked for. Every field but `username` is
- * passed over.
+ * (app/Actions/UpdateStaleHandles.php at 85376fd), and such a person is
+ * left out and counted, never asked for. An item without `handle` is
+ * refused. Every field but `handle` is passed over.
  */
 export function readFollowList(value: unknown): (string | null)[] | undefined {
   if (!isRecord(value)) return undefined
@@ -114,7 +115,7 @@ export function readFollowList(value: unknown): (string | null)[] | undefined {
   const people: (string | null)[] = []
   for (const item of data) {
     if (!isRecord(item)) return undefined
-    const username: unknown = Reflect.get(item, 'username')
+    const username: unknown = Reflect.get(item, 'handle')
     if (typeof username !== 'string' || seen.has(username)) return undefined
     seen.add(username)
     people.push(USERNAME.test(username) ? username : null)

@@ -83,13 +83,18 @@ describe('the follow list', () => {
   })
 
   const hostile: [string, unknown][] = [
-    ['a username that is not a string', apiFollowList([apiPerson(friend(1), { username: 7 })])],
-    ['an item without a username', apiFollowList([{ id: 'x' }])],
+    ['a handle that is not a string', apiFollowList([apiPerson(friend(1), { handle: 7 })])],
+    ['an item without a handle', apiFollowList([{ id: 'x' }])],
+    ['an item named under `username` alone, the field upstream #1179 removed', apiFollowList([{ id: 'x', username: friend(1) }])],
+    [
+      'a whole person named under `username` and not `handle`',
+      apiFollowList([apiPerson(friend(1)), { ...apiPerson(friend(2), { handle: undefined }), username: friend(2) }]),
+    ],
     ['an item that is not an object', apiFollowList([friend(1)])],
     ['an item that is an array', apiFollowList([[friend(1)]])],
     ['a null item', apiFollowList([null])],
     ['a name that comes twice', apiFollowList([apiPerson(friend(1)), apiPerson(friend(1))])],
-    ['data that is not an array', { data: { username: friend(1) } }],
+    ['data that is not an array', { data: { handle: friend(1) } }],
     ['no data', { links: {} }],
     ['an array body', [apiPerson(friend(1))]],
     ['more items than a page of 30', apiFollowList(Array.from({ length: 31 }, (_, i) => apiPerson(friend(i + 1))))],

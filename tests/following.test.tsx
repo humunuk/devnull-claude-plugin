@@ -562,8 +562,10 @@ describe('the Following tab says', () => {
       const world = followingWorld(on, [friend(1)])
       await start($)
       const bodies = [
-        apiFollowList([apiPerson(friend(1)), { name: 'no username' }]),
-        apiFollowList([apiPerson(friend(1)), apiPerson(friend(2), { username: ['x'] })]),
+        apiFollowList([apiPerson(friend(1)), { name: 'no handle' }]),
+        apiFollowList([apiPerson(friend(1)), apiPerson(friend(2), { handle: ['x'] })]),
+        // Named under `username` alone, the field upstream #1179 removed.
+        apiFollowList([apiPerson(friend(1)), apiPerson(friend(2), { handle: undefined, username: friend(2) })]),
         apiFollowList([apiPerson(friend(1)), 'friend-2']),
         apiFollowList([apiPerson(friend(1)), apiPerson(friend(1))]),
         apiFollowList(Array.from({ length: 31 }, (_, i) => apiPerson(friend(i + 1)))),

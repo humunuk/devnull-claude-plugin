@@ -366,8 +366,10 @@ describe('the pane', () => {
       const bodies = [
         SERVER_TEXT,
         '{"data":"nope"}',
-        JSON.stringify(apiList([apiCommit(1), apiCommit(2, { author: { username: 'bad user' } })])),
+        JSON.stringify(apiList([apiCommit(1), apiCommit(2, { author: { handle: 'bad user' } })])),
         JSON.stringify(apiList([apiCommit(1, { id: 'not-a-uuid' })])),
+        // Authors named under `username` alone, the field upstream #1179 removed.
+        JSON.stringify(apiList([apiCommit(1, { author: { username: USERNAME, name: 'Some User' } })])),
       ]
       for (const text of bodies) {
         world.answer({ status: 200, text })

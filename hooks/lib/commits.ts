@@ -5,9 +5,11 @@
 // Upstream (dev-null-sh/dev-null.sh at 3e55ca6): UserCommitController answers
 // a guest with CommitResource items under `data`. `short_hash` is the last 7
 // hex characters of the id; `created_at` is `toIso8601ZuluString()`, so
-// `YYYY-MM-DDTHH:MM:SSZ`; `parent_id` is the parent's id, or null. Fields the
-// mod does not read (`html_url`, `link_preview`, `images`, the rest of
-// `author`, `links`, `meta`) are passed over and never copied.
+// `YYYY-MM-DDTHH:MM:SSZ`; `parent_id` is the parent's id, or null. `author` is
+// a UserResource, whose name field is `handle` (at 85376fd: #1179 removed its
+// `username`, and an author without `handle` is refused). Fields the mod does
+// not read (`html_url`, `link_preview`, `images`, the rest of `author`,
+// `links`, `meta`) are passed over and never copied.
 
 import type { CommitSummary } from '../../types'
 import { USERNAME } from './account'
@@ -59,7 +61,7 @@ function readCommit(item: unknown): CommitSummary | undefined {
   const repliesCount: unknown = Reflect.get(item, 'replies_count')
   const author: unknown = Reflect.get(item, 'author')
   if (!isRecord(author)) return undefined
-  const username: unknown = Reflect.get(author, 'username')
+  const username: unknown = Reflect.get(author, 'handle')
 
   if (typeof id !== 'string' || !UUID.test(id)) return undefined
   // The hash is what a reply names, so it must be the end of this id.

@@ -5,12 +5,15 @@
 // The public API (dev-null-sh/dev-null.sh KNOWLEDGE_BASE.md, "Public read API
 // and Atom feeds"):
 // `GET /api/v1/users/{username}` answers 200 with the profile under `data`,
-// `username` among its fields (shape read live on 2026-10-20), and 404 when
-// no user has that username. The username is matched exactly, case
-// included (checked live on 2026-10-20: a public profile answered 200 under
-// its username as written and 404 under the same name in another case, as
-// `Some-User` and `some-user` would). Fields the mod does not read are passed
-// over and never copied; nothing of the body is shown.
+// the name in its `handle` field (UserResource at 85376fd, where #1179
+// removed `username`; read live on 2026-10-27), and 404 when no user has that
+// name. The name is matched exactly, case included: the route binds
+// `{user:handle}` through `profiles.handle`, compared with `=` in
+// PostgreSQL (User::resolveRouteBindingQuery at 85376fd), and live on
+// 2026-10-27 a public profile answered 200 under its name as written and 404
+// under the same name in another case, as `Some-User` and `some-user` would.
+// A profile without `handle` is refused. Fields the mod does not read are
+// passed over and never copied; nothing of the body is shown.
 
 import type { HttpInit } from 'claude-code'
 
@@ -66,7 +69,7 @@ function profileUsername(text: string): string | undefined {
   if (!isRecord(value)) return undefined
   const data: unknown = Reflect.get(value, 'data')
   if (!isRecord(data)) return undefined
-  const username: unknown = Reflect.get(data, 'username')
+  const username: unknown = Reflect.get(data, 'handle')
 
   return typeof username === 'string' ? username : undefined
 }

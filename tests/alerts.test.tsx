@@ -784,7 +784,7 @@ describe('a list that is not exactly what the mod expects', () => {
     ['no data', JSON.stringify({ items: [] })],
     ['one item with a bad id', JSON.stringify(apiList([apiCommit(1), apiCommit(2, { id: 'javascript:alert(1)' })]))],
     ['one count that is text', JSON.stringify(apiList([apiCommit(1, { replies_count: '9' })]))],
-    ['a bidi author', JSON.stringify(apiList([apiCommit(1, { author: { username: 'evil\u202e' } })]))],
+    ['a bidi author', JSON.stringify(apiList([apiCommit(1, { author: { handle: 'evil\u202e' } })]))],
   ]
 
   for (const [name, text] of hostileBodies) {

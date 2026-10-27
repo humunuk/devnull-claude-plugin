@@ -1,6 +1,8 @@
 // Commit list bodies in the shape `GET /api/v1/users/{username}/commits`
-// answered on 2026-10-20 (read once, without ?replies=1 and with it). Every
-// value is invented; no real person's data is kept here.
+// answered on 2026-10-20 (read once, without ?replies=1 and with it), with the
+// author's name under `handle` as answered on 2026-10-27 (upstream #1179
+// removed `username`). Every value is invented; no real person's data is kept
+// here.
 
 export const USERNAME = 'some-user'
 
@@ -31,7 +33,7 @@ export function apiCommit(n: number, overrides: Record<string, unknown> = {}): R
     images: [],
     author: {
       id: '0190a1b2-0000-7000-8000-000000000001',
-      username: USERNAME,
+      handle: USERNAME,
       name: 'Some User',
       avatar_url: 'https://avatars.example.invalid/some-user.png',
       bio: 'an invented bio',
